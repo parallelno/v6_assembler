@@ -1,0 +1,782 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
+use crate::encoding::{Encoding, EncodingCase, EncodingType};
+use crate::expr::{eval_expr, Expr};
+use crate::instructions::{encode_instruction, ParsedOperand};
+use crate::lexer::tokenize_line;
+use crate::parser::{self, Directive, ParsedLine, PrintArg, TextItem};
+use crate::preprocessor::{SourceLine, expand_macro, parse_macro_invocation};
+use crate::project::CpuMode;
+use crate::symbols::SymbolTable;
+
+/// Output buffer for assembled code (sparse 64KB address space)
+pub struct OutputBuffer {
+    data: Vec<Option<u8>>,
+    min_addr: Option<u16>,
+    max_addr: Option<u16>,
+}
+
+impl OutputBuffer {
+    pub fn new() -> Self {
+        Self {
+            data: vec![None; 65536],
+            min_addr: None,
+            max_addr: None,
+        }
+    }
+
+    pub fn write_byte(&mut self, addr: u16, byte: u8) {
+        self.data[addr as usize] = Some(byte);
+        self.min_addr = Some(self.min_addr.map_or(addr, |m: u16| m.min(addr)));
+        self.max_addr = Some(self.max_addr.map_or(addr, |m: u16| m.max(addr)));
+    }
+
+    pub fn write_bytes(&mut self, start_addr: u16, bytes: &[u8]) {
+        for (i, &b) in bytes.iter().enumerate() {
+            self.write_byte(start_addr.wrapping_add(i as u16), b);
+        }
+    }
+
+    /// Extract the contiguous ROM bytes
+    pub fn extract_rom(&self) -> Vec<u8> {
+        let min = match self.min_addr {
+            Some(a) => a as usize,
+            None => return Vec::new(),
+        };
+        let max = match self.max_addr {
+            Some(a) => a as usize,
+            None => return Vec::new(),
+        };
+        let mut rom = Vec::with_capacity(max - min + 1);
+        for i in min..=max {
+            rom.push(self.data[i].unwrap_or(0));
+        }
+        rom
+    }
+
+    pub fn min_addr(&self) -> Option<u16> {
+        self.min_addr
+    }
+
+    pub fn max_addr(&self) -> Option<u16> {
+        self.max_addr
+    }
+}
+
+/// Debug info collected during assembly
+#[derive(Debug, Default)]
+pub struct DebugInfo {
+    pub labels: HashMap<String, LabelInfo>,
+    pub consts: HashMap<String, ConstInfo>,
+    pub macros: HashMap<String, MacroDebugInfo>,
+    pub line_addresses: HashMap<String, HashMap<usize, Vec<u16>>>,
+    pub data_lines: HashMap<String, HashMap<usize, DataLineInfo>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LabelInfo {
+    pub addr: u16,
+    pub src: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstInfo {
+    pub value: i64,
+    pub line: usize,
+    pub src: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MacroDebugInfo {
+    pub src: String,
+    pub line: usize,
+    pub params: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataLineInfo {
+    pub addr: u16,
+    pub byte_length: usize,
+    pub unit_bytes: usize,
+}
+
+/// Assembler settings that can be modified by .setting
+#[derive(Debug, Clone)]
+pub struct AssemblerSettings {
+    pub optional_enabled: bool,
+}
+
+impl Default for AssemblerSettings {
+    fn default() -> Self {
+        Self {
+            optional_enabled: true,
+        }
+    }
+}
+
+/// The main assembler context
+pub struct Assembler {
+    pub symbols: SymbolTable,
+    pub output: OutputBuffer,
+    pub debug_info: DebugInfo,
+    pub pc: u16,
+    pub cpu_mode: CpuMode,
+    pub encoding: Encoding,
+    pub settings: AssemblerSettings,
+    pub errors: Vec<AsmError>,
+    pub quiet: bool,
+    project_dir: PathBuf,
+
+    // Tracking for .optional blocks
+    optional_stack: Vec<OptionalBlock>,
+    optional_blocks: Vec<OptionalBlockInfo>,
+
+    // Loop/if expansion depth tracking
+    macro_depth: usize,
+}
+
+struct OptionalBlock {
+    start_idx: usize,
+    symbols_defined: Vec<String>,
+}
+
+struct OptionalBlockInfo {
+    start_line_idx: usize,
+    end_line_idx: usize,
+    symbols_defined: Vec<String>,
+}
+
+impl Assembler {
+    pub fn new(cpu_mode: CpuMode, project_dir: PathBuf) -> Self {
+        Self {
+            symbols: SymbolTable::new(),
+            output: OutputBuffer::new(),
+            debug_info: DebugInfo::default(),
+            pc: 0,
+            cpu_mode,
+            encoding: Encoding::default(),
+            settings: AssemblerSettings::default(),
+            errors: Vec::new(),
+            quiet: false,
+            project_dir,
+            optional_stack: Vec::new(),
+            optional_blocks: Vec::new(),
+            macro_depth: 0,
+        }
+    }
+
+    /// Assemble preprocessed source lines (two-pass)
+    pub fn assemble(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
+        // Pass 1: Collect symbols and sizes
+        self.pass1(lines)?;
+
+        // Resolve deferred constants
+        self.resolve_deferred_constants()?;
+
+        // Pass 2: Generate code
+        self.symbols.reset_for_pass2();
+        self.symbols.reset_macro_call_count();
+        self.pc = 0;
+        self.encoding = Encoding::default();
+        self.pass2(lines)?;
+
+        Ok(())
+    }
+
+    fn pass1(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
+        let mut i = 0;
+        while i < lines.len() {
+            let line = &lines[i];
+            i += 1;
+
+            // Try to expand macro invocations
+            if let Some((macro_name, args)) = parse_macro_invocation(&line.text, &self.symbols) {
+                if self.macro_depth >= 32 {
+                    return Err(AsmError::new("Macro expansion depth exceeded 32 levels"));
+                }
+                let macro_def = self.symbols.get_macro(&macro_name).unwrap().clone();
+                let call_idx = self.symbols.macro_call_count() + 1;
+                let expanded = expand_macro(&macro_def, &args, call_idx, &line.file, line.line_num)?;
+                self.symbols.begin_macro_expansion(&macro_name);
+                self.macro_depth += 1;
+                self.pass1(&expanded)?;
+                self.macro_depth -= 1;
+                self.symbols.end_macro_expansion();
+                continue;
+            }
+
+            self.process_line_pass1(line)?;
+        }
+        Ok(())
+    }
+
+    fn process_line_pass1(&mut self, line: &SourceLine) -> AsmResult<()> {
+        let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
+        if tokens.is_empty() {
+            return Ok(());
+        }
+
+        let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
+
+        for item in &parsed {
+            match item {
+                ParsedLine::Empty => {}
+                ParsedLine::Label(name) => {
+                    self.symbols.define_label(name, self.pc, &line.file, line.line_num)?;
+                }
+                ParsedLine::LocalLabel(name) => {
+                    self.symbols.define_local_label(name, self.pc, &line.file, line.line_num)?;
+                }
+                ParsedLine::ConstDef { name, is_local, expr } => {
+                    // Try to evaluate immediately, defer if forward reference
+                    let resolver = |sym: &str| -> Option<i64> {
+                        self.symbols.resolve(sym)
+                    };
+                    match eval_expr(expr, &resolver, self.pc) {
+                        Ok(val) => {
+                            if *is_local {
+                                self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
+                            } else {
+                                // Check if it's a mutable variable update
+                                if self.symbols.exists(name) {
+                                    if let Err(_) = self.symbols.define_constant(name, val, &line.file, line.line_num) {
+                                        // May be a .var update
+                                        self.symbols.update_variable(name, val)?;
+                                    }
+                                } else {
+                                    self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Defer evaluation
+                            if !*is_local {
+                                self.symbols.define_constant_deferred(name, expr.clone(), &line.file, line.line_num)?;
+                            }
+                        }
+                    }
+
+                    // Record address for this line
+                    self.record_line_address(&line.file, line.line_num, self.pc);
+                }
+                ParsedLine::VarDef { name, expr } => {
+                    let resolver = |sym: &str| -> Option<i64> {
+                        self.symbols.resolve(sym)
+                    };
+                    if let Ok(val) = eval_expr(expr, &resolver, self.pc) {
+                        self.symbols.define_variable(name, val, &line.file, line.line_num)?;
+                    }
+                }
+                ParsedLine::Instruction { mnemonic, operands, .. } => {
+                    let size = self.instruction_size(mnemonic, operands)?;
+                    self.record_line_address(&line.file, line.line_num, self.pc);
+                    self.pc = self.pc.wrapping_add(size as u16);
+                }
+                ParsedLine::Directive(dir) => {
+                    self.process_directive_pass1(dir, &line.file, line.line_num)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn process_directive_pass1(&mut self, dir: &Directive, file: &str, line_num: usize) -> AsmResult<()> {
+        match dir {
+            Directive::Org(expr) => {
+                let val = self.eval_expr(expr)?;
+                self.pc = val as u16;
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::Align(expr) => {
+                let alignment = self.eval_expr(expr)? as u16;
+                if alignment > 0 {
+                    let mask = alignment - 1;
+                    if self.pc & mask != 0 {
+                        self.pc = (self.pc | mask) + 1;
+                    }
+                }
+            }
+            Directive::Storage { length, filler } => {
+                let len = self.eval_expr(length)? as u16;
+                self.record_line_address(file, line_num, self.pc);
+                self.pc = self.pc.wrapping_add(len);
+            }
+            Directive::Byte(exprs) => {
+                self.record_line_address(file, line_num, self.pc);
+                self.pc = self.pc.wrapping_add(exprs.len() as u16);
+            }
+            Directive::Word(exprs) => {
+                self.record_line_address(file, line_num, self.pc);
+                self.pc = self.pc.wrapping_add((exprs.len() * 2) as u16);
+            }
+            Directive::Dword(exprs) => {
+                self.record_line_address(file, line_num, self.pc);
+                self.pc = self.pc.wrapping_add((exprs.len() * 4) as u16);
+            }
+            Directive::Text(items) => {
+                self.record_line_address(file, line_num, self.pc);
+                let byte_count = self.text_byte_count(items);
+                self.pc = self.pc.wrapping_add(byte_count as u16);
+            }
+            Directive::Encoding { enc_type, case } => {
+                if let Some(et) = EncodingType::from_str(enc_type) {
+                    self.encoding.encoding_type = et;
+                }
+                if let Some(c) = case {
+                    if let Some(ec) = EncodingCase::from_str(c) {
+                        self.encoding.case = ec;
+                    }
+                }
+            }
+            Directive::Setting(pairs) => {
+                for (key, val) in pairs {
+                    if key.eq_ignore_ascii_case("optional") {
+                        self.settings.optional_enabled = !val.eq_ignore_ascii_case("false");
+                    }
+                }
+            }
+            Directive::If(_) | Directive::EndIf | Directive::Loop(_) | Directive::EndLoop => {
+                // These should have been expanded in preprocessing for simple cases
+                // For now, handle in-line during pass processing
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::Optional | Directive::EndOptional => {
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::IncBin { path, offset, length } => {
+                self.record_line_address(file, line_num, self.pc);
+                // For pass 1 we need to know the size
+                let resolved = self.resolve_file_path(path)?;
+                let file_len = std::fs::metadata(&resolved)
+                    .map_err(|e| AsmError::new(format!("Cannot read {}: {}", path, e)))?
+                    .len() as usize;
+                let off = offset.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(0);
+                let len = length.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(file_len - off);
+                self.pc = self.pc.wrapping_add(len as u16);
+            }
+            Directive::FileSize { name, path } => {
+                let resolved = self.resolve_file_path(path)?;
+                let size = std::fs::metadata(&resolved)
+                    .map_err(|e| AsmError::new(format!("Cannot stat {}: {}", path, e)))?
+                    .len() as i64;
+                if !name.is_empty() {
+                    self.symbols.define_constant(name, size, file, line_num)?;
+                }
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::Include(_) => {
+                // Should have been expanded already
+            }
+            Directive::MacroDef { .. } | Directive::EndMacro => {
+                // Should have been collected already
+            }
+            Directive::Print(_) | Directive::Error(_) => {
+                // Only processed in pass 2
+            }
+        }
+        Ok(())
+    }
+
+    fn pass2(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
+        let mut i = 0;
+        while i < lines.len() {
+            let line = &lines[i];
+            i += 1;
+
+            // Try to expand macro invocations
+            if let Some((macro_name, args)) = parse_macro_invocation(&line.text, &self.symbols) {
+                if self.macro_depth >= 32 {
+                    return Err(AsmError::new("Macro expansion depth exceeded 32 levels"));
+                }
+                let macro_def = self.symbols.get_macro(&macro_name).unwrap().clone();
+                let call_idx = self.symbols.macro_call_count() + 1;
+                let expanded = expand_macro(&macro_def, &args, call_idx, &line.file, line.line_num)?;
+                self.symbols.begin_macro_expansion(&macro_name);
+                self.macro_depth += 1;
+                self.pass2(&expanded)?;
+                self.macro_depth -= 1;
+                self.symbols.end_macro_expansion();
+                continue;
+            }
+
+            self.process_line_pass2(line)?;
+        }
+        Ok(())
+    }
+
+    fn process_line_pass2(&mut self, line: &SourceLine) -> AsmResult<()> {
+        let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
+        if tokens.is_empty() {
+            return Ok(());
+        }
+
+        let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
+
+        for item in &parsed {
+            match item {
+                ParsedLine::Empty => {}
+                ParsedLine::Label(name) => {
+                    self.symbols.define_label(name, self.pc, &line.file, line.line_num)?;
+                    self.debug_info.labels.insert(name.clone(), LabelInfo {
+                        addr: self.pc,
+                        src: line.file.clone(),
+                        line: line.line_num,
+                    });
+                }
+                ParsedLine::LocalLabel(name) => {
+                    self.symbols.define_local_label(name, self.pc, &line.file, line.line_num)?;
+                    // Add to debug with disambiguation suffix
+                    let idx = self.debug_info.labels.iter()
+                        .filter(|(k, _)| k.starts_with(&format!("@{}_", name)))
+                        .count();
+                    let debug_name = format!("@{}_{}", name, idx);
+                    self.debug_info.labels.insert(debug_name, LabelInfo {
+                        addr: self.pc,
+                        src: line.file.clone(),
+                        line: line.line_num,
+                    });
+                }
+                ParsedLine::ConstDef { name, is_local, expr } => {
+                    let val = self.eval_expr(expr)?;
+                    if *is_local {
+                        self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
+                    } else {
+                        if self.symbols.exists(name) {
+                            if let Err(_) = self.symbols.define_constant(name, val, &line.file, line.line_num) {
+                                self.symbols.update_variable(name, val)?;
+                            }
+                        } else {
+                            self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                        }
+                        self.debug_info.consts.insert(name.clone(), ConstInfo {
+                            value: val,
+                            line: line.line_num,
+                            src: line.file.clone(),
+                        });
+                    }
+                    self.record_line_address(&line.file, line.line_num, self.pc);
+                }
+                ParsedLine::VarDef { name, expr } => {
+                    let val = self.eval_expr(expr)?;
+                    if self.symbols.exists(name) {
+                        let _ = self.symbols.update_variable(name, val);
+                    } else {
+                        self.symbols.define_variable(name, val, &line.file, line.line_num)?;
+                    }
+                }
+                ParsedLine::Instruction { mnemonic, operands, expressions } => {
+                    self.record_line_address(&line.file, line.line_num, self.pc);
+                    self.emit_instruction(mnemonic, operands, expressions)?;
+                }
+                ParsedLine::Directive(dir) => {
+                    self.process_directive_pass2(dir, &line.file, line.line_num)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn process_directive_pass2(&mut self, dir: &Directive, file: &str, line_num: usize) -> AsmResult<()> {
+        match dir {
+            Directive::Org(expr) => {
+                let val = self.eval_expr(expr)?;
+                self.pc = val as u16;
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::Align(expr) => {
+                let alignment = self.eval_expr(expr)? as u16;
+                if alignment > 0 {
+                    let mask = alignment - 1;
+                    while self.pc & mask != 0 {
+                        self.output.write_byte(self.pc, 0);
+                        self.pc = self.pc.wrapping_add(1);
+                    }
+                }
+            }
+            Directive::Storage { length, filler } => {
+                let len = self.eval_expr(length)? as u16;
+                let fill = filler.as_ref().map(|e| self.eval_expr(e)).transpose()?.map(|v| v as u8);
+                self.record_line_address(file, line_num, self.pc);
+                if let Some(f) = fill {
+                    self.record_data_line(file, line_num, self.pc, len as usize, 1);
+                    for _ in 0..len {
+                        self.output.write_byte(self.pc, f);
+                        self.pc = self.pc.wrapping_add(1);
+                    }
+                } else {
+                    self.record_data_line(file, line_num, self.pc, len as usize, 1);
+                    self.pc = self.pc.wrapping_add(len);
+                }
+            }
+            Directive::Byte(exprs) => {
+                self.record_line_address(file, line_num, self.pc);
+                self.record_data_line(file, line_num, self.pc, exprs.len(), 1);
+                for expr in exprs {
+                    let val = self.eval_expr(expr)? as u8;
+                    self.output.write_byte(self.pc, val);
+                    self.pc = self.pc.wrapping_add(1);
+                }
+            }
+            Directive::Word(exprs) => {
+                self.record_line_address(file, line_num, self.pc);
+                self.record_data_line(file, line_num, self.pc, exprs.len() * 2, 2);
+                for expr in exprs {
+                    let val = self.eval_expr(expr)? as u16;
+                    self.output.write_byte(self.pc, (val & 0xFF) as u8);
+                    self.pc = self.pc.wrapping_add(1);
+                    self.output.write_byte(self.pc, ((val >> 8) & 0xFF) as u8);
+                    self.pc = self.pc.wrapping_add(1);
+                }
+            }
+            Directive::Dword(exprs) => {
+                self.record_line_address(file, line_num, self.pc);
+                self.record_data_line(file, line_num, self.pc, exprs.len() * 4, 4);
+                for expr in exprs {
+                    let val = self.eval_expr(expr)? as u32;
+                    for i in 0..4 {
+                        self.output.write_byte(self.pc, ((val >> (i * 8)) & 0xFF) as u8);
+                        self.pc = self.pc.wrapping_add(1);
+                    }
+                }
+            }
+            Directive::Text(items) => {
+                self.record_line_address(file, line_num, self.pc);
+                let bytes = self.encode_text_items(items);
+                let byte_count = bytes.len();
+                for b in bytes {
+                    self.output.write_byte(self.pc, b);
+                    self.pc = self.pc.wrapping_add(1);
+                }
+            }
+            Directive::Encoding { enc_type, case } => {
+                if let Some(et) = EncodingType::from_str(enc_type) {
+                    self.encoding.encoding_type = et;
+                }
+                if let Some(c) = case {
+                    if let Some(ec) = EncodingCase::from_str(c) {
+                        self.encoding.case = ec;
+                    }
+                }
+            }
+            Directive::Setting(pairs) => {
+                for (key, val) in pairs {
+                    if key.eq_ignore_ascii_case("optional") {
+                        self.settings.optional_enabled = !val.eq_ignore_ascii_case("false");
+                    }
+                }
+            }
+            Directive::Print(args) if !self.quiet => {
+                let mut output = String::new();
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { output.push(' '); }
+                    match arg {
+                        PrintArg::Str(s) => output.push_str(s),
+                        PrintArg::Expr(expr) => {
+                            let val = self.eval_expr(expr)?;
+                            output.push_str(&val.to_string());
+                        }
+                    }
+                }
+                eprintln!("{}", output);
+            }
+            Directive::Print(_) => {}
+            Directive::Error(args) => {
+                let mut output = String::new();
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { output.push(' '); }
+                    match arg {
+                        PrintArg::Str(s) => output.push_str(s),
+                        PrintArg::Expr(expr) => {
+                            let val = self.eval_expr(expr)?;
+                            output.push_str(&val.to_string());
+                        }
+                    }
+                }
+                return Err(AsmError::new(output)
+                    .with_location(SourceLocation {
+                        file: file.to_string(),
+                        line: line_num,
+                        col: 1,
+                    }));
+            }
+            Directive::IncBin { path, offset, length } => {
+                self.record_line_address(file, line_num, self.pc);
+                let resolved = self.resolve_file_path(path)?;
+                let data = std::fs::read(&resolved)
+                    .map_err(|e| AsmError::new(format!("Cannot read {}: {}", path, e)))?;
+                let off = offset.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(0);
+                let len = length.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(data.len() - off);
+                let slice = &data[off..off + len];
+                for &b in slice {
+                    self.output.write_byte(self.pc, b);
+                    self.pc = self.pc.wrapping_add(1);
+                }
+            }
+            Directive::FileSize { name, path } => {
+                let resolved = self.resolve_file_path(path)?;
+                let size = std::fs::metadata(&resolved)
+                    .map_err(|e| AsmError::new(format!("Cannot stat {}: {}", path, e)))?
+                    .len() as i64;
+                if !name.is_empty() {
+                    if self.symbols.exists(name) {
+                        let _ = self.symbols.update_variable(name, size);
+                    } else {
+                        self.symbols.define_constant(name, size, file, line_num)?;
+                    }
+                }
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::If(_) | Directive::EndIf | Directive::Loop(_) | Directive::EndLoop => {
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::Optional | Directive::EndOptional => {
+                self.record_line_address(file, line_num, self.pc);
+            }
+            Directive::Include(_) | Directive::MacroDef { .. } | Directive::EndMacro => {}
+        }
+        Ok(())
+    }
+
+    fn emit_instruction(&mut self, mnemonic: &str, operands: &[ParsedOperand], expressions: &[Expr]) -> AsmResult<()> {
+        let mut encoded = encode_instruction(mnemonic, operands, self.cpu_mode)?;
+
+        // Fill in immediate values from expressions
+        let mut expr_idx = 0;
+        if encoded.has_imm8 && expr_idx < expressions.len() {
+            let val = self.eval_expr(&expressions[expr_idx])? as u8;
+            encoded.bytes[1] = val;
+            expr_idx += 1;
+        }
+        if encoded.has_imm16 && expr_idx < expressions.len() {
+            let val = self.eval_expr(&expressions[expr_idx])? as u16;
+            encoded.bytes[1] = (val & 0xFF) as u8;
+            encoded.bytes[2] = ((val >> 8) & 0xFF) as u8;
+        }
+
+        self.output.write_bytes(self.pc, &encoded.bytes);
+        self.pc = self.pc.wrapping_add(encoded.size as u16);
+        Ok(())
+    }
+
+    fn instruction_size(&self, mnemonic: &str, operands: &[ParsedOperand]) -> AsmResult<usize> {
+        let encoded = encode_instruction(mnemonic, operands, self.cpu_mode)?;
+        Ok(encoded.size)
+    }
+
+    fn eval_expr(&self, expr: &Expr) -> AsmResult<i64> {
+        let symbols = &self.symbols;
+        eval_expr(expr, &|name| {
+            symbols.resolve(name).or_else(|| symbols.resolve_local(name))
+        }, self.pc)
+    }
+
+    fn resolve_deferred_constants(&mut self) -> AsmResult<()> {
+        // Multiple passes until all constants are resolved
+        for _ in 0..100 {
+            let mut any_resolved = false;
+            let unresolved: Vec<_> = self.symbols.all_globals()
+                .iter()
+                .filter(|(_, info)| info.value.is_none() && info.expr.is_some())
+                .map(|(name, info)| (name.clone(), info.expr.clone().unwrap(), info.file.clone(), info.line))
+                .collect();
+
+            if unresolved.is_empty() {
+                return Ok(());
+            }
+
+            for (name, expr, file, line) in unresolved {
+                let resolver = |sym: &str| -> Option<i64> {
+                    self.symbols.resolve(sym)
+                };
+                if let Ok(val) = eval_expr(&expr, &resolver, 0) {
+                    self.symbols.define_constant(&name, val, &file, line)?;
+                    any_resolved = true;
+                }
+            }
+
+            if !any_resolved {
+                // Check if there are still unresolved symbols
+                let still_unresolved: Vec<_> = self.symbols.all_globals()
+                    .iter()
+                    .filter(|(_, info)| info.value.is_none())
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                if !still_unresolved.is_empty() {
+                    return Err(AsmError::new(format!(
+                        "Unresolved symbols: {}", still_unresolved.join(", ")
+                    )));
+                }
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn text_byte_count(&self, items: &[TextItem]) -> usize {
+        items.iter().map(|item| match item {
+            TextItem::Str(s) => s.len(),
+            TextItem::Char(_) => 1,
+        }).sum()
+    }
+
+    fn encode_text_items(&self, items: &[TextItem]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for item in items {
+            match item {
+                TextItem::Str(s) => {
+                    bytes.extend(self.encoding.encode_string(s));
+                }
+                TextItem::Char(c) => {
+                    bytes.push(self.encoding.encode_char(*c));
+                }
+            }
+        }
+        bytes
+    }
+
+    fn resolve_file_path(&self, path: &str) -> AsmResult<PathBuf> {
+        let p = self.project_dir.join(path);
+        if p.exists() {
+            return Ok(p);
+        }
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+        Err(AsmError::new(format!("Cannot find file: {}", path)))
+    }
+
+    fn record_line_address(&mut self, file: &str, line_num: usize, addr: u16) {
+        self.debug_info.line_addresses
+            .entry(file.to_string())
+            .or_default()
+            .entry(line_num)
+            .or_default()
+            .push(addr);
+    }
+
+    fn record_data_line(&mut self, file: &str, line_num: usize, addr: u16, byte_length: usize, unit_bytes: usize) {
+        self.debug_info.data_lines
+            .entry(file.to_string())
+            .or_default()
+            .insert(line_num, DataLineInfo {
+                addr,
+                byte_length,
+                unit_bytes,
+            });
+    }
+
+    /// Collect macro debug info after preprocessing
+    pub fn collect_macro_debug_info(&mut self) {
+        for (name, def) in self.symbols.all_macros() {
+            self.debug_info.macros.insert(name.clone(), MacroDebugInfo {
+                src: def.file.clone(),
+                line: def.line,
+                params: def.params.iter().map(|p| p.name.clone()).collect(),
+            });
+        }
+    }
+}

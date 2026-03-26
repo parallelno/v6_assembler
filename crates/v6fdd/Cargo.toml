@@ -1,0 +1,10 @@
+[package]
+name = "v6fdd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+v6_core = { path = "../v6_core" }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }

@@ -1,0 +1,12 @@
+pub mod project;
+pub mod lexer;
+pub mod parser;
+pub mod expr;
+pub mod assembler;
+pub mod instructions;
+pub mod preprocessor;
+pub mod symbols;
+pub mod encoding;
+pub mod output;
+pub mod diagnostics;
+pub mod fdd;
