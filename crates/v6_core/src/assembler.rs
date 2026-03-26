@@ -1078,6 +1078,7 @@ mod tests {
         let mut assembler = Assembler::new(CpuMode::I8080, project.root.clone());
         let lines = preprocess(&main_path, &project.root, &mut assembler.symbols, &|path| {
             fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
+
         })?;
         assembler.assemble(&lines)?;
         Ok(assembler)
@@ -1377,5 +1378,244 @@ Counter EQU 5
         let assembler = assemble_project(&project, "main.asm");
 
         assert_eq!(rom_bytes(&assembler), vec![1, 0, 0, 2]);
+    }
+
+    // ── helper for Z80-mode tests ───────────────────────────────────────────
+
+    fn assemble_project_cpu(project: &TestProject, main_file: &str, cpu: CpuMode) -> Assembler {
+        let main_path = project.path(main_file);
+        let mut assembler = Assembler::new(cpu, project.root.clone());
+        let lines = preprocess(&main_path, &project.root, &mut assembler.symbols, &|path| {
+            fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
+        })
+        .unwrap();
+        assembler.assemble(&lines).unwrap();
+        assembler
+    }
+
+    // ── forward references ──────────────────────────────────────────────────
+
+    #[test]
+    fn resolves_forward_references_in_constants() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b"TOTAL = PART1 + PART2\nPART1 = 5\nPART2 = 3\n.org $0100\n.byte TOTAL",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(assembler.symbols.resolve("TOTAL"), Some(8));
+        assert_eq!(rom_bytes(&assembler), vec![8]);
+    }
+
+    // ── expression operators ────────────────────────────────────────────────
+
+    #[test]
+    fn low_and_high_byte_operators() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b"ADDR = $1234\n.byte <ADDR, >ADDR",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0x34, 0x12]);
+    }
+
+    #[test]
+    fn location_counter_asterisk() {
+        // .word * at address $0142 should emit $42 $01 (little-endian $0142)
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0142\n.word *",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0x42, 0x01]);
+    }
+
+    #[test]
+    fn true_false_boolean_literals() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0100\n.if TRUE\n  .byte $AA\n.endif\n.if FALSE\n  .byte $BB\n.endif\n.byte $CC",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0xAA, 0xCC]);
+    }
+
+    // ── local labels ────────────────────────────────────────────────────────
+
+    #[test]
+    fn local_labels_scope_isolation() {
+        // Two global labels each define @lbl at a different address.
+        // References to @lbl should resolve to the one in the same scope.
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0100\nfunc1:\n@lbl:\n  .byte $01\n  .byte <@lbl, >@lbl\nfunc2:\n@lbl:\n  .byte $02\n  .byte <@lbl, >@lbl",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        // func1: @lbl at $0100 → <$0100=0x00, >$0100=0x01
+        // func2: @lbl at $0103 → <$0103=0x03, >$0103=0x01
+        assert_eq!(rom_bytes(&assembler), vec![0x01, 0x00, 0x01, 0x02, 0x03, 0x01]);
+    }
+
+    // ── directive aliases ───────────────────────────────────────────────────
+
+    #[test]
+    fn endloop_endl_alias() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0100\n.loop 2\n  .byte $AA\n.endl",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0xAA, 0xAA]);
+    }
+
+    #[test]
+    fn opt_endopt_aliases() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0100\n    jmp Used\n.opt\nUsed:\n    .byte $44\n.endopt",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0xC3, 0x03, 0x01, 0x44]);
+    }
+
+    // ── .incbin without offset / length ────────────────────────────────────
+
+    #[test]
+    fn incbin_without_offset_length() {
+        let project = TestProject::new(&[
+            (
+                "main.asm",
+                b".org $0100\n.incbin \"data.bin\"",
+            ),
+            (
+                "data.bin",
+                &[0xAA, 0xBB, 0xCC],
+            ),
+        ]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    // ── nested blocks ───────────────────────────────────────────────────────
+
+    #[test]
+    fn nested_if_inside_loop() {
+        // Counter increments each iteration; .byte $BB only when Counter > 2
+        let project = TestProject::new(&[(
+            "main.asm",
+            b"Counter .var 0\n.loop 4\n  Counter = Counter + 1\n  .if Counter > 2\n    .byte $BB\n  .endif\n.endloop",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        // Iterations 3 and 4 satisfy Counter > 2 → two $BB bytes
+        assert_eq!(assembler.symbols.resolve("Counter"), Some(4));
+        assert_eq!(rom_bytes(&assembler), vec![0xBB, 0xBB]);
+    }
+
+    #[test]
+    fn loop_with_zero_iterations() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0100\n.loop 0\n  .byte $AA\n.endloop\n.byte $BB",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![0xBB]);
+    }
+
+    #[test]
+    fn loop_count_from_expression() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b"N = 6\n.loop N / 2\n  .byte $FF\n.endloop",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        // N / 2 = 3 iterations
+        assert_eq!(rom_bytes(&assembler), vec![0xFF, 0xFF, 0xFF]);
+    }
+
+    // ── Z80 mode ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn assembles_z80_instructions() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".org $0100\nLD A, B\nLD HL, $0200\nJP $0100",
+        )]);
+
+        let assembler = assemble_project_cpu(&project, "main.asm", CpuMode::Z80);
+
+        assert_eq!(rom_bytes(&assembler), vec![
+            0x78,             // LD A, B  = MOV A, B
+            0x21, 0x00, 0x02, // LD HL, $0200 = LXI H, $0200
+            0xC3, 0x00, 0x01, // JP $0100 = JMP $0100
+        ]);
+    }
+
+    // ── negative immediate values ───────────────────────────────────────────
+
+    #[test]
+    fn word_and_dword_negative_values() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b".word -5\n.dword -1",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(rom_bytes(&assembler), vec![
+            0xFB, 0xFF,             // -5 as i16 LE
+            0xFF, 0xFF, 0xFF, 0xFF, // -1 as i32 LE
+        ]);
+    }
+
+    // ── error cases ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn constant_reassignment_is_an_error() {
+        let project = TestProject::new(&[(
+            "main.asm",
+            b"FOO = 1\nFOO = 2",
+        )]);
+
+        let error = assemble_project_result(&project, "main.asm").err().unwrap();
+
+        assert!(error.message.contains("FOO"));
+    }
+
+    // ── label-style constant definition ────────────────────────────────────
+
+    #[test]
+    fn label_style_constant_definition() {
+        // ADDR: = $1234 and ADDR: EQU $5678 are the label-style constant forms
+        let project = TestProject::new(&[(
+            "main.asm",
+            b"ADDR: = $1234\nOTHER: EQU $5678\n.word ADDR, OTHER",
+        )]);
+
+        let assembler = assemble_project(&project, "main.asm");
+
+        assert_eq!(assembler.symbols.resolve("ADDR"), Some(0x1234));
+        assert_eq!(assembler.symbols.resolve("OTHER"), Some(0x5678));
+        assert_eq!(rom_bytes(&assembler), vec![0x34, 0x12, 0x78, 0x56]);
     }
 }

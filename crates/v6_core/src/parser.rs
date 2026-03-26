@@ -114,14 +114,17 @@ pub fn parse_line(tokens: &[LocatedToken], cpu_mode: CpuMode) -> AsmResult<Vec<P
         }
     }
 
-    // Check for constant definition: NAME = expr or NAME EQU expr
+    // Check for constant definition: NAME = expr, NAME EQU expr, NAME: = expr, NAME: EQU expr
     if let Some(Token::Identifier(name)) = tokens.get(pos).map(|t| &t.value) {
         let name = name.clone();
-        // Check for = or EQU
-        if let Some(next) = tokens.get(pos + 1).map(|t| &t.value) {
+        // Allow optional colon for label-style definitions: NAME: = expr or NAME: EQU expr
+        let mut op_pos = pos + 1;
+        if let Some(Token::Colon) = tokens.get(op_pos).map(|t| &t.value) {
+            op_pos += 1;
+        }
+        if let Some(next) = tokens.get(op_pos).map(|t| &t.value) {
             if matches!(next, Token::Operator(ref s) if s == "=") {
-                pos += 2; // skip name and =
-                let (expr, _consumed) = parse_expr_from(tokens, pos)?;
+                let (expr, _consumed) = parse_expr_from(tokens, op_pos + 1)?;
                 results.push(ParsedLine::ConstDef {
                     name,
                     is_local: false,
@@ -130,8 +133,7 @@ pub fn parse_line(tokens: &[LocatedToken], cpu_mode: CpuMode) -> AsmResult<Vec<P
                 return Ok(results);
             }
             if matches!(next, Token::Identifier(ref s) if s.to_uppercase() == "EQU") {
-                pos += 2;
-                let (expr, _consumed) = parse_expr_from(tokens, pos)?;
+                let (expr, _consumed) = parse_expr_from(tokens, op_pos + 1)?;
                 results.push(ParsedLine::ConstDef {
                     name,
                     is_local: false,
@@ -224,11 +226,12 @@ fn parse_labels(tokens: &[LocatedToken], mut pos: usize, results: &mut Vec<Parse
         if let Some(Token::Identifier(name)) = tokens.get(pos).map(|t| &t.value) {
             if let Some(Token::Colon) = tokens.get(pos + 1).map(|t| &t.value) {
                 let name = name.clone();
-                // Check if followed by = (constant definition like "CONST: = value")
-                if let Some(Token::Operator(ref s)) = tokens.get(pos + 2).map(|t| &t.value) {
-                    if s == "=" {
-                        // This is a constant definition, not a label
-                        break;
+                // Check if followed by = or EQU (constant definition like "CONST: = value" or "CONST: EQU value")
+                if let Some(tok) = tokens.get(pos + 2).map(|t| &t.value) {
+                    match tok {
+                        Token::Operator(ref s) if s == "=" => break,
+                        Token::Identifier(ref s) if s.to_uppercase() == "EQU" => break,
+                        _ => {}
                     }
                 }
                 pos += 2; // skip name and colon

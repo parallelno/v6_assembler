@@ -5,46 +5,43 @@ use super::{EncodedInstruction, ParsedOperand, Register, RegisterPair, Condition
 pub fn encode(mnemonic: &str, operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
     let upper = mnemonic.to_uppercase();
 
-    // First try direct i8080 mnemonics (they should still work in Z80 mode)
+    // Z80-specific mnemonics must be checked BEFORE the i8080 fallback because some
+    // share names with i8080 instructions that have different semantics.
+    // For example, i8080 "JP nn" = "Jump if Positive" (conditional, 0xF2),
+    // but Z80 "JP nn" = unconditional jump (0xC3).
+    match upper.as_str() {
+        "LD"   => return encode_ld(operands),
+        "ADD"  => return encode_z80_add(operands),
+        "ADC"  => return encode_z80_adc(operands),
+        "SUB"  => return encode_z80_sub(operands),
+        "SBC"  => return encode_z80_sbc(operands),
+        "AND"  => return encode_z80_alu_reg(operands, 0xA0, 0xE6),
+        "XOR"  => return encode_z80_alu_reg(operands, 0xA8, 0xEE),
+        "OR"   => return encode_z80_alu_reg(operands, 0xB0, 0xF6),
+        "CP"   => return encode_z80_alu_reg(operands, 0xB8, 0xFE),
+        "INC"  => return encode_z80_inc_dec(operands, true),
+        "DEC"  => return encode_z80_inc_dec(operands, false),
+        "JP"   => return encode_z80_jp(operands),
+        "CALL" => return encode_z80_call(operands),
+        "RET"  => return encode_z80_ret(operands),
+        "EX"   => return encode_z80_ex(operands),
+        "HALT" => return i8080::encode("HLT", &[]),
+        "RLCA" => return i8080::encode("RLC", &[]),
+        "RRCA" => return i8080::encode("RRC", &[]),
+        "RLA"  => return i8080::encode("RAL", &[]),
+        "RRA"  => return i8080::encode("RAR", &[]),
+        "CPL"  => return i8080::encode("CMA", &[]),
+        "SCF"  => return i8080::encode("STC", &[]),
+        "CCF"  => return i8080::encode("CMC", &[]),
+        _ => {}
+    }
+
+    // Fall back to direct i8080 mnemonics (MOV, MVI, LXI, PUSH, POP, etc. still work in Z80 mode)
     if let Ok(enc) = i8080::encode(mnemonic, operands) {
         return Ok(enc);
     }
 
-    match upper.as_str() {
-        "LD" => encode_ld(operands),
-        "ADD" => encode_z80_add(operands),
-        "ADC" => encode_z80_adc(operands),
-        "SUB" => encode_z80_sub(operands),
-        "SBC" => encode_z80_sbc(operands),
-        "AND" => encode_z80_alu_reg(operands, 0xA0, 0xE6),
-        "XOR" => encode_z80_alu_reg(operands, 0xA8, 0xEE),
-        "OR"  => encode_z80_alu_reg(operands, 0xB0, 0xF6),
-        "CP"  => encode_z80_alu_reg(operands, 0xB8, 0xFE),
-        "INC" => encode_z80_inc_dec(operands, true),
-        "DEC" => encode_z80_inc_dec(operands, false),
-        "JP"  => encode_z80_jp(operands),
-        "CALL" => encode_z80_call(operands),
-        "RET" => encode_z80_ret(operands),
-        "PUSH" => i8080::encode("PUSH", operands),
-        "POP"  => i8080::encode("POP", operands),
-        "IN"  => i8080::encode("IN", operands),
-        "OUT" => i8080::encode("OUT", operands),
-        "EX" => encode_z80_ex(operands),
-        "HALT" => i8080::encode("HLT", &[]),
-        "NOP" => i8080::encode("NOP", &[]),
-        "DI"  => i8080::encode("DI", &[]),
-        "EI"  => i8080::encode("EI", &[]),
-        "RLCA" => i8080::encode("RLC", &[]),
-        "RRCA" => i8080::encode("RRC", &[]),
-        "RLA"  => i8080::encode("RAL", &[]),
-        "RRA"  => i8080::encode("RAR", &[]),
-        "DAA"  => i8080::encode("DAA", &[]),
-        "CPL"  => i8080::encode("CMA", &[]),
-        "SCF"  => i8080::encode("STC", &[]),
-        "CCF"  => i8080::encode("CMC", &[]),
-        "RST"  => i8080::encode("RST", operands),
-        _ => Err(AsmError::new(format!("Unknown Z80 instruction: {}", mnemonic))),
-    }
+    Err(AsmError::new(format!("Unknown Z80 instruction: {}", mnemonic)))
 }
 
 fn reg_code(op: &ParsedOperand) -> AsmResult<u8> {
