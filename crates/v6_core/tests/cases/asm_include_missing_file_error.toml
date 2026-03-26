@@ -1,0 +1,10 @@
+# Tests .include with non-existent file produces error
+
+[files]
+"main.asm" = '''
+.include "does_not_exist.asm"
+db 0x00
+'''
+
+[expect]
+error_contains = "does_not_exist.asm"

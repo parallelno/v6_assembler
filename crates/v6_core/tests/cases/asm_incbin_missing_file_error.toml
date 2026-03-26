@@ -1,0 +1,10 @@
+# Tests .incbin with non-existent file produces error
+
+[files]
+"main.asm" = '''
+.org $1000
+.incbin "does_not_exist.bin"
+'''
+
+[expect]
+error_contains = "does_not_exist.bin"

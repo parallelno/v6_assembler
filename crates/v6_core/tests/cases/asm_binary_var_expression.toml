@@ -1,0 +1,14 @@
+# Tests binary literal in variable expressions with bitwise OR
+
+[files]
+"main.asm" = '''
+.org 0x0100
+Value .var %0011_1100 | %0000_0011
+DB Value
+Value = Value + %0001_0000
+DB Value
+'''
+
+[expect]
+rom = "3F 4F"
+min_addr = "0100"

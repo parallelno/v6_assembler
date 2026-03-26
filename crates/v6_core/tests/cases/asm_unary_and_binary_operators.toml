@@ -1,0 +1,38 @@
+# Tests < and > as both unary (low/high byte) and binary (comparison) operators
+
+[files]
+"main.asm" = '''
+VALUE = 0x1234
+.org 0x0100
+
+db <VALUE
+db >VALUE
+
+.if 5 > 3
+db 0xAA
+.endif
+
+.if 3 < 5
+db 0xBB
+.endif
+
+.if 3 > 5
+db 0xCC
+.endif
+
+.if 5 < 3
+db 0xDD
+.endif
+
+.if >VALUE == 0x12
+db 0xEE
+.endif
+
+.if <VALUE == 0x34
+db 0xFF
+.endif
+'''
+
+[expect]
+rom = "34 12 AA BB EE FF"
+min_addr = "0100"

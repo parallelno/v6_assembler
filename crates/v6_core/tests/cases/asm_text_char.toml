@@ -1,0 +1,9 @@
+# Tests .text with character literals
+
+[files]
+"main.asm" = '''
+.text 'X', 'Y', 'Z'
+'''
+
+[expect]
+rom = "58 59 5A"

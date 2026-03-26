@@ -1,0 +1,9 @@
+# Tests .text with spaces and special escape characters
+
+[files]
+"main.asm" = '''
+.text "   address:   1", '\n', '\0'
+'''
+
+[expect]
+rom = "20 20 20 61 64 64 72 65 73 73 3A 20 20 20 31 0A 00"

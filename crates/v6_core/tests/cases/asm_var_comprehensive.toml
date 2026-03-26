@@ -1,0 +1,33 @@
+# Tests comprehensive .var functionality: creation, update, expressions, EQU, multiple vars
+
+[files]
+"main.asm" = '''
+.org 0x0100
+
+Counter .var 10
+DB Counter
+
+Counter = 5
+DB Counter
+
+Counter = Counter + 3
+DB Counter
+
+Counter EQU Counter * 2
+DB Counter
+
+Offset .var 0x20
+DB Offset + 1
+
+Var1 .var 100
+Var2 .var 200
+DB Var1
+DB Var2
+Var1 = 150
+DB Var1
+DB Var2
+'''
+
+[expect]
+rom = "0A 05 08 10 21 64 C8 96 C8"
+min_addr = "0100"

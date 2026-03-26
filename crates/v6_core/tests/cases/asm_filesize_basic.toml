@@ -1,0 +1,18 @@
+# Tests .filesize directive returns correct binary file size
+
+[files]
+"main.asm" = '''
+FILE_SIZE .filesize "test_data.bin"
+.org $2000
+.byte FILE_SIZE
+'''
+
+[binary_files]
+"test_data.bin" = "112233445566778899AABBCCDDEEFF00"
+
+[expect]
+rom = "10"
+min_addr = "2000"
+
+[expect.symbols]
+FILE_SIZE = 16

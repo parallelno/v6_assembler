@@ -1,0 +1,21 @@
+# Tests .incbin fallback from subdirectory to project root
+
+[files]
+"main.asm" = '''
+.org 0x0400
+.include "subdir/incbin_from_subdir.asm"
+final_marker:
+    db 0xAA
+'''
+"subdir/incbin_from_subdir.asm" = '''
+.incbin "test_data.bin", 0, 4
+after_bin:
+    db 0x99
+'''
+
+[binary_files]
+"test_data.bin" = "112233445566778899AABBCCDDEEFF00"
+
+[expect]
+rom = "11 22 33 44 99 AA"
+min_addr = "0400"

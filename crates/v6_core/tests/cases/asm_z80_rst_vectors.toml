@@ -1,0 +1,18 @@
+# Tests Z80 mode RST vectors use 0-7 syntax (same as i8080)
+
+cpu = "z80"
+
+[files]
+"main.asm" = '''
+rst 0
+rst 1
+rst 2
+rst 3
+rst 4
+rst 5
+rst 6
+rst 7
+'''
+
+[expect]
+rom = "C7 CF D7 DF E7 EF F7 FF"

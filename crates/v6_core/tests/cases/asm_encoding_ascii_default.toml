@@ -1,0 +1,10 @@
+# Tests .encoding "ascii" default (no case conversion)
+
+[files]
+"main.asm" = '''
+.encoding "ascii"
+.text "AbC"
+'''
+
+[expect]
+rom = "41 62 43"

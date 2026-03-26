@@ -1,0 +1,22 @@
+# Tests multiline comment edge cases
+
+[files]
+"main.asm" = '''
+.org 0x0100
+
+/* Single line multiline comment */
+    db 0x01
+
+    /* Comment before instruction */ mvi a, 0x03
+
+    mvi b, /* comment between instruction and operand */ 0x04
+
+    db 0x05
+
+/* Comment with special characters: $, @, %, #, &, *, etc. */
+    db 0x06
+'''
+
+[expect]
+rom = "01 3E 03 06 04 05 06"
+min_addr = "0100"

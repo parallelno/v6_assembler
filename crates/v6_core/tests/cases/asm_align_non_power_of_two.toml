@@ -1,0 +1,10 @@
+# Tests .align with non-power-of-two (assembler does not enforce power-of-two)
+
+[files]
+"main.asm" = '''
+.org 0x0001
+.align 3
+nop
+'''
+
+[expect]

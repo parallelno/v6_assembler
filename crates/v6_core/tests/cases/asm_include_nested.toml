@@ -1,0 +1,24 @@
+# Tests nested .include (root → mid → leaf)
+
+[files]
+"main.asm" = '''
+.org 0x0500
+root_label:
+    .include "include_nested_mid.asm"
+after_nested:
+    db 0xEE
+'''
+"include_nested_mid.asm" = '''
+mid_label:
+    db 0x11
+    .include "include_nested_leaf.asm"
+    db 0x22
+'''
+"include_nested_leaf.asm" = '''
+leaf_label:
+    db 0x33
+'''
+
+[expect]
+rom = "11 33 22 EE"
+min_addr = "0500"

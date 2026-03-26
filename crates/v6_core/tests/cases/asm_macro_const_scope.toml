@@ -1,0 +1,17 @@
+# Tests that constants defined in macro body conflict with outer scope on re-invocation
+
+[files]
+"main.asm" = '''
+.macro EmitConst(val)
+C = val
+DB C
+.endmacro
+
+C = 9
+
+EmitConst(1)
+EmitConst(5)
+'''
+
+[expect]
+error_contains = "already defined"

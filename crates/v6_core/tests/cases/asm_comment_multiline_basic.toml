@@ -1,0 +1,25 @@
+# Tests basic multiline comment /* */ support
+
+[files]
+"main.asm" = '''
+.org 0x0100
+
+/* This is a multiline comment
+   that spans multiple lines */
+start:
+    db 0x01
+
+/* Another comment */ db 0x02
+
+    db 0x03 /* inline multiline comment */
+
+/* Comment
+with multiple
+lines
+*/
+    db 0x04
+'''
+
+[expect]
+rom = "01 02 03 04"
+min_addr = "0100"

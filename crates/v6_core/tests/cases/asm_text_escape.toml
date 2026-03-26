@@ -1,0 +1,9 @@
+# Tests .text with escape sequences
+
+[files]
+"main.asm" = '''
+.text "A\nB"
+'''
+
+[expect]
+rom = "41 0A 42"

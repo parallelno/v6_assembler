@@ -1,0 +1,17 @@
+# Tests .dword / DD directive with constants and negative values
+
+[files]
+"main.asm" = '''
+CONST_BASE = $01000000
+
+.org 0x1000
+start:
+    dd 0x12345678, CONST_BASE + 0x22
+    .dword -1
+after:
+    db 0x00
+'''
+
+[expect]
+rom = "78 56 34 12 22 00 00 01 FF FF FF FF 00"
+min_addr = "1000"

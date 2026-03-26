@@ -1,0 +1,11 @@
+# Tests unsupported Z80-only opcodes produce errors
+
+cpu = "z80"
+
+[files]
+"main.asm" = '''
+ld ix,0x1000
+'''
+
+[expect]
+error_contains = "Invalid operand"

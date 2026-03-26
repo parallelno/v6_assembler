@@ -1,0 +1,22 @@
+# Tests .include fallback from subdirectory to project root
+
+[files]
+"main.asm" = '''
+.org 0x0200
+.include "subdir/include_from_subdir.asm"
+final_label:
+    db 0x88
+'''
+"subdir/include_from_subdir.asm" = '''
+.include "include_child.asm"
+after_subdir:
+    db 0x77
+'''
+"include_child.asm" = '''
+child_label:
+    db 0x44
+'''
+
+[expect]
+rom = "44 77 88"
+min_addr = "0200"

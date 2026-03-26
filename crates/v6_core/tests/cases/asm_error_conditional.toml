@@ -1,0 +1,15 @@
+# Tests .error directive inside a true .if block produces error with evaluated args
+
+[files]
+"main.asm" = '''
+VALUE = 150
+
+.if (VALUE > 100)
+  .error "Value", VALUE, "exceeds maximum"
+.endif
+
+db 0xBB
+'''
+
+[expect]
+error_contains = "Value 150 exceeds maximum"

@@ -1,0 +1,21 @@
+# Tests .include directive with a child file
+
+[files]
+"main.asm" = '''
+.org 0x0040
+.include "include_child.asm"
+after_include:
+    db 0x55
+'''
+"include_child.asm" = '''
+child_label:
+    db 0x44
+'''
+
+[expect]
+rom = "44 55"
+min_addr = "0040"
+
+[expect.symbols]
+child_label = 64
+after_include = 65

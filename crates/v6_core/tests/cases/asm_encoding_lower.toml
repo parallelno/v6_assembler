@@ -1,0 +1,10 @@
+# Tests .encoding "ascii", "lower" forces uppercase input to lowercase
+
+[files]
+"main.asm" = '''
+.encoding "ascii", "lower"
+.text "ABC"
+'''
+
+[expect]
+rom = "61 62 63"

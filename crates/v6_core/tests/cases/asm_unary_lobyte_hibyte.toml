@@ -1,0 +1,19 @@
+# Tests unary < (low byte) and > (high byte) prefix operators
+
+[files]
+"main.asm" = '''
+CONST1 = 0xF00
+.org 515
+start:  DB >CONST1
+CONST2 = <start
+    mvi a, >start
+    db <0x1234
+    db >0x1234
+'''
+
+[expect]
+rom = "0F 3E 02 34 12"
+min_addr = "0203"
+
+[expect.symbols]
+CONST2 = 3

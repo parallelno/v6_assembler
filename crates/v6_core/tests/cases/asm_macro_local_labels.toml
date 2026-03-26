@@ -1,0 +1,16 @@
+# Tests local labels (@lbl) inside macros are scoped per invocation
+
+[files]
+"main.asm" = '''
+.macro Spin(val)
+@loop:
+  DB val
+  JMP @loop
+.endmacro
+
+Spin(1)
+Spin(2)
+'''
+
+[expect]
+rom = "01 C3 00 00 02 C3 04 00"

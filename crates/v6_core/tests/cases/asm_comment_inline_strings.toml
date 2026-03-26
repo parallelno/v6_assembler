@@ -1,0 +1,13 @@
+# Tests inline comment markers inside strings are preserved
+
+[files]
+"main.asm" = '''
+.org 0x0100
+
+.text "semi;colon"
+db 0xAA
+'''
+
+[expect]
+rom = "73 65 6D 69 3B 63 6F 6C 6F 6E AA"
+min_addr = "0100"

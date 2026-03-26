@@ -1,0 +1,21 @@
+# Tests unary < and > operators with various immediate instructions
+
+[files]
+"main.asm" = '''
+ADDR = 0x1234
+CONST1 = 0x4020
+CONST2 = 0x8000
+.org 0x0000
+
+adi >ADDR
+sui <ADDR
+ani <0xABCD
+ori >0xABCD
+cpi <ADDR + 1
+in <0x1200
+out >0x1200
+lxi h, CONST1 + >CONST2
+'''
+
+[expect]
+rom = "C6 12 D6 34 E6 CD F6 AB FE 35 DB 00 D3 12 21 A0 40"

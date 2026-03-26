@@ -1,0 +1,16 @@
+# Tests macro parameter substitution with string literals and encoding
+
+[files]
+"main.asm" = '''
+_LINE_BREAK_ = 106
+
+.macro TEXT (string, end_code=0)
+.encoding "screencodecommodore", "mixed"
+    .text string
+    .byte end_code
+.endmacro
+
+TEXT("Hi!", _LINE_BREAK_)
+'''
+
+[expect]

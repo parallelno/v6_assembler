@@ -1,0 +1,10 @@
+# Tests .loop without matching .endloop produces error
+
+[files]
+"main.asm" = '''
+.loop 2
+    db 0x11
+'''
+
+[expect]
+error_contains = "Missing .endloop"

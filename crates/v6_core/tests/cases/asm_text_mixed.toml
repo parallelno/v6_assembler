@@ -1,0 +1,9 @@
+# Tests .text with mixed string and char literals
+
+[files]
+"main.asm" = '''
+.text "Hello", 'W'
+'''
+
+[expect]
+rom = "48 65 6C 6C 6F 57"

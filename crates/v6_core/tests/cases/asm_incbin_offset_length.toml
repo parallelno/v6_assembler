@@ -1,0 +1,14 @@
+# Tests .incbin with offset and length parameters
+
+[files]
+"main.asm" = '''
+.org $8000
+.incbin "test_data.bin", $4, $8
+'''
+
+[binary_files]
+"test_data.bin" = "112233445566778899AABBCCDDEEFF00"
+
+[expect]
+rom = "55 66 77 88 99 AA BB CC"
+min_addr = "8000"

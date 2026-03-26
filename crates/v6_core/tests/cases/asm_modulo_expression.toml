@@ -1,0 +1,14 @@
+# Tests binary literal prefix % in expressions
+
+[files]
+"main.asm" = '''
+.org 0x0100
+VAL = %1010 + %0101
+DB VAL
+DB %1111_0000
+DB %0000_1111 | %1111_0000
+'''
+
+[expect]
+rom = "0F F0 FF"
+min_addr = "0100"

@@ -1,0 +1,10 @@
+# Tests .if without matching .endif produces error
+
+[files]
+"main.asm" = '''
+.if 1
+    db 0x01
+'''
+
+[expect]
+error_contains = "Missing .endif"

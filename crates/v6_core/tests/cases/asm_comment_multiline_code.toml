@@ -1,0 +1,23 @@
+# Tests multiline comments /* */ with code and instructions
+
+[files]
+"main.asm" = '''
+.org 0x0080
+
+/*
+ * Block comment before code
+ */
+    mvi a, 0x10
+
+    /* Comment between instructions */
+
+    mvi b, 0x20
+
+/* Comment around instruction */ mvi c, 0x30
+
+    db 0xAA /* inline comment */ , 0xBB
+'''
+
+[expect]
+rom = "3E 10 06 20 0E 30 AA BB"
+min_addr = "0080"

@@ -1,0 +1,14 @@
+# Tests integer division truncates toward zero
+
+[files]
+"main.asm" = '''
+.org 0x0100
+CONST1 = 5 / 2
+DB CONST1
+DB -5 / 2
+DW 7 / 3
+'''
+
+[expect]
+rom = "02 FE 02 00"
+min_addr = "0100"

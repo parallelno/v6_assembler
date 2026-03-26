@@ -1,0 +1,16 @@
+# Tests .incbin with offset and length in hex-prefix format
+
+[files]
+"main.asm" = '''
+.org $2000
+.incbin "test_data.bin", $08, $04
+after_incbin:
+    db $FF
+'''
+
+[binary_files]
+"test_data.bin" = "112233445566778899AABBCCDDEEFF00"
+
+[expect]
+rom = "99 AA BB CC FF"
+min_addr = "2000"

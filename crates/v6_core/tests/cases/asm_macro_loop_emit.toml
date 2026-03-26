@@ -1,0 +1,18 @@
+# Tests .loop inside macro with different invocations
+
+[files]
+"main.asm" = '''
+.macro EmitValue(count, value)
+    .loop count
+        db value
+    .endloop
+.endmacro
+
+.org 0x0300
+EmitValue(2, 0x11)
+EmitValue(3, 0x22)
+'''
+
+[expect]
+rom = "11 11 22 22 22"
+min_addr = "0300"

@@ -1,0 +1,14 @@
+# Tests .loop inside macro body without .endloop produces error
+
+[files]
+"main.asm" = '''
+.macro Broken(count)
+    .loop count
+        db 0x00
+.endmacro
+
+Broken(2)
+'''
+
+[expect]
+error_contains = ".endloop"

@@ -1,0 +1,10 @@
+# Tests .encoding "screencodecommodore" maps @, A, B to 0, 1, 2
+
+[files]
+"main.asm" = '''
+.encoding "screencodecommodore"
+.text "@AB"
+'''
+
+[expect]
+rom = "00 01 02"

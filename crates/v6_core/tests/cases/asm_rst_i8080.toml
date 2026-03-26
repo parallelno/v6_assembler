@@ -1,0 +1,34 @@
+# Tests i8080 RST instructions in decimal, hex suffix, and $ prefix formats
+
+[files]
+"main.asm" = '''
+rst 0
+rst 1
+rst 2
+rst 3
+rst 4
+rst 5
+rst 6
+rst 7
+
+rst 0h
+rst 1h
+rst 2h
+rst 3h
+rst 4h
+rst 5h
+rst 6h
+rst 7h
+
+rst $0
+rst $1
+rst $2
+rst $3
+rst $4
+rst $5
+rst $6
+rst $7
+'''
+
+[expect]
+rom = "C7 CF D7 DF E7 EF F7 FF C7 CF D7 DF E7 EF F7 FF C7 CF D7 DF E7 EF F7 FF"

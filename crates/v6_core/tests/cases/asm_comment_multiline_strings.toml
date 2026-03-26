@@ -1,0 +1,18 @@
+# Tests multiline comments with strings containing comment markers
+
+[files]
+"main.asm" = '''
+.org 0x0100
+
+.text "Another string"
+
+db 0x01 /* comment */ , 0x02
+
+.text '*', '/'
+
+db 0x03
+'''
+
+[expect]
+rom = "41 6E 6F 74 68 65 72 20 73 74 72 69 6E 67 01 02 2A 2F 03"
+min_addr = "0100"

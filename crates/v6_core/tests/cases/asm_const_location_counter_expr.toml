@@ -1,0 +1,15 @@
+# Tests * (location counter) in constant definition with forward usage
+
+[files]
+"main.asm" = '''
+.org 0x0100
+mvi_imm_addr: = * + 1
+
+dw mvi_imm_addr
+dw *
+mvi a, 0x10
+'''
+
+[expect]
+rom = "01 01 02 01 3E 10"
+min_addr = "0100"

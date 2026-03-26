@@ -1,0 +1,17 @@
+# Tests .error with labels and high/low byte expressions
+
+[files]
+"main.asm" = '''
+START = 0x1234
+
+.org 0x0100
+label1:
+    db 0xFF
+
+.if (>START == 0x12)
+  .error "Address high byte is", >START
+.endif
+'''
+
+[expect]
+error_contains = "Address high byte is 18"

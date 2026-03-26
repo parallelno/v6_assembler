@@ -1,0 +1,10 @@
+# Tests .encoding with unknown encoding name (silently keeps previous encoding)
+
+[files]
+"main.asm" = '''
+.encoding "invalid"
+.text "A"
+'''
+
+[expect]
+rom = "41"

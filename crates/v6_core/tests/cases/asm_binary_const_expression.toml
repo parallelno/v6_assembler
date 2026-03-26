@@ -1,0 +1,13 @@
+# Tests binary literal in constant expressions
+
+[files]
+"main.asm" = '''
+.org 0x0100
+MASK = %1111_0000
+CONST = MASK + %0000_1010
+DB CONST
+'''
+
+[expect]
+rom = "FA"
+min_addr = "0100"

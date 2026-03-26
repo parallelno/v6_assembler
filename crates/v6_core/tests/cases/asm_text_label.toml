@@ -1,0 +1,17 @@
+# Tests .text with label and following data
+
+[files]
+"main.asm" = '''
+.org 0x0100
+message: .text "Hi"
+after_text:
+    db 0xFF
+'''
+
+[expect]
+rom = "48 69 FF"
+min_addr = "0100"
+
+[expect.symbols]
+message = 256
+after_text = 258

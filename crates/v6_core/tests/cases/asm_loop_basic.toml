@@ -1,0 +1,12 @@
+# Tests basic .loop directive with constant count
+
+[files]
+"main.asm" = '''
+COUNT = 3
+.loop COUNT
+    db 0x22
+.endloop
+'''
+
+[expect]
+rom = "22 22 22"
