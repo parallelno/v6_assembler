@@ -1,0 +1,12 @@
+# Tests .storage without filler byte defaults to zero
+
+[files]
+"main.asm" = '''
+.org $0100
+.byte 1
+.storage 2
+.byte 2
+'''
+
+[expect]
+rom = "01 00 00 02"

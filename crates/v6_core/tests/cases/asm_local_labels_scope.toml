@@ -1,0 +1,17 @@
+# Tests local labels (@lbl) are scoped between global labels
+
+[files]
+"main.asm" = '''
+.org $0100
+func1:
+@lbl:
+  .byte $01
+  .byte <@lbl, >@lbl
+func2:
+@lbl:
+  .byte $02
+  .byte <@lbl, >@lbl
+'''
+
+[expect]
+rom = "01 00 01 02 03 01"

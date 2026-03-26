@@ -1,0 +1,18 @@
+# Tests .var definition and = reassignment and EQU override
+
+[files]
+"main.asm" = '''
+.org $0100
+Counter .var 10
+.byte Counter
+Counter = Counter - 1
+.byte Counter
+Counter EQU 5
+.byte Counter
+'''
+
+[expect]
+rom = "0A 09 05"
+
+[expect.symbols]
+Counter = 5

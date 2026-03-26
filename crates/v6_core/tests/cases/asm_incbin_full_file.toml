@@ -1,0 +1,13 @@
+# Tests .incbin without offset/length includes complete file
+
+[files]
+"main.asm" = '''
+.org $0100
+.incbin "data.bin"
+'''
+
+[binary_files]
+"data.bin" = "AABBCC"
+
+[expect]
+rom = "AA BB CC"

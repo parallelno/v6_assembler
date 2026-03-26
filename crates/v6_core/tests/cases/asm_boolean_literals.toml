@@ -1,0 +1,16 @@
+# Tests TRUE and FALSE boolean literals in .if conditions
+
+[files]
+"main.asm" = '''
+.org $0100
+.if TRUE
+  .byte $AA
+.endif
+.if FALSE
+  .byte $BB
+.endif
+.byte $CC
+'''
+
+[expect]
+rom = "AA CC"

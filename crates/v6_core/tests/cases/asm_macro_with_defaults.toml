@@ -1,0 +1,14 @@
+# Tests macro definition with default parameter and .endmacro
+
+[files]
+"main.asm" = '''
+.org $0100
+.macro PUT(value=$2A)
+    .byte value
+.endmacro
+PUT()
+PUT($7F)
+'''
+
+[expect]
+rom = "2A 7F"

@@ -1,0 +1,14 @@
+# Tests .print directive executes without causing an error
+
+quiet = false
+
+[files]
+"main.asm" = '''
+.org $0100
+VALUE = 3
+.print "value", VALUE
+.byte VALUE
+'''
+
+[expect]
+rom = "03"

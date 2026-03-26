@@ -1,0 +1,16 @@
+# Tests .setting optional, false disables pruning of unreferenced optional blocks
+
+[files]
+"main.asm" = '''
+.org $0100
+.setting optional, false
+.optional
+Unused:
+    .byte $44
+.endoptional
+.byte $55
+'''
+
+[expect]
+rom = "44 55"
+optional_enabled = false

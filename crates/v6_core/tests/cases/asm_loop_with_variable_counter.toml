@@ -1,0 +1,18 @@
+# Tests .loop with .var counter incrementing each iteration
+
+[files]
+"main.asm" = '''
+.org $0100
+Counter .var 1
+.loop 3
+    .byte Counter
+    Counter = Counter + 1
+.endloop
+.byte Counter
+'''
+
+[expect]
+rom = "01 02 03 04"
+
+[expect.symbols]
+Counter = 4

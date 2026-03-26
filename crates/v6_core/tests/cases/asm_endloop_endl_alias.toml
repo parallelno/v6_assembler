@@ -1,0 +1,12 @@
+# Tests .endl alias for .endloop
+
+[files]
+"main.asm" = '''
+.org $0100
+.loop 2
+  .byte $AA
+.endl
+'''
+
+[expect]
+rom = "AA AA"

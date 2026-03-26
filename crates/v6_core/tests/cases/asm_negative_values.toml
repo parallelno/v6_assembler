@@ -1,0 +1,10 @@
+# Tests .word and .dword with negative values (two's complement)
+
+[files]
+"main.asm" = '''
+.word -5
+.dword -1
+'''
+
+[expect]
+rom = "FB FF FF FF FF FF"

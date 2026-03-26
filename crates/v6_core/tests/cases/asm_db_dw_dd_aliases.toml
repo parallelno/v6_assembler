@@ -1,0 +1,12 @@
+# Tests DB, DW, DD directive aliases
+
+[files]
+"main.asm" = '''
+.org $0100
+DB 1, 2
+DW $1234
+DD $12345678
+'''
+
+[expect]
+rom = "01 02 34 12 78 56 34 12"

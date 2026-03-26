@@ -1,0 +1,11 @@
+# Tests .error directive produces error with correct message and source location
+
+[files]
+"main.asm" = '''
+.org $0100
+.error "boom", 7
+'''
+
+[expect]
+error_contains = "boom 7"
+error_line = 2

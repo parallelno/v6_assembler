@@ -1,0 +1,16 @@
+# Tests forward references in constant definitions are resolved
+
+[files]
+"main.asm" = '''
+TOTAL = PART1 + PART2
+PART1 = 5
+PART2 = 3
+.org $0100
+.byte TOTAL
+'''
+
+[expect]
+rom = "08"
+
+[expect.symbols]
+TOTAL = 8

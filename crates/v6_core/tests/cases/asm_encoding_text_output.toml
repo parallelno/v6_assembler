@@ -1,0 +1,13 @@
+# Tests .encoding directive with ascii upper and screencodecommodore
+
+[files]
+"main.asm" = '''
+.org $0100
+.encoding "ascii", "upper"
+.text "ab", 'c'
+.encoding "screencodecommodore"
+.text "@A"
+'''
+
+[expect]
+rom = "41 42 43 00 01"

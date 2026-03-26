@@ -1,0 +1,13 @@
+# Tests .loop with 0 iterations produces no output
+
+[files]
+"main.asm" = '''
+.org $0100
+.loop 0
+  .byte $AA
+.endloop
+.byte $BB
+'''
+
+[expect]
+rom = "BB"

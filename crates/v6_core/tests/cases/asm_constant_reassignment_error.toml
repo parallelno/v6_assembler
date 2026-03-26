@@ -1,0 +1,10 @@
+# Tests that reassigning a constant (not .var) produces an error
+
+[files]
+"main.asm" = '''
+FOO = 1
+FOO = 2
+'''
+
+[expect]
+error_contains = "FOO"

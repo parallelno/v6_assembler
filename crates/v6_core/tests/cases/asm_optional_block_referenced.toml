@@ -1,0 +1,14 @@
+# Tests .optional block is kept when its label is referenced
+
+[files]
+"main.asm" = '''
+.org $0100
+    jmp Used
+.optional
+Used:
+    .byte $44
+.endoptional
+'''
+
+[expect]
+rom = "C3 03 01 44"

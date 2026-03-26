@@ -1,0 +1,15 @@
+# Tests LABEL: = value and LABEL: EQU value constant definition forms
+
+[files]
+"main.asm" = '''
+ADDR: = $1234
+OTHER: EQU $5678
+.word ADDR, OTHER
+'''
+
+[expect]
+rom = "34 12 78 56"
+
+[expect.symbols]
+ADDR = 4660
+OTHER = 22136

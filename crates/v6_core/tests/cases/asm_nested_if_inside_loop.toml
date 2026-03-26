@@ -1,0 +1,18 @@
+# Tests .if nested inside .loop — only iterations with Counter > 2 emit bytes
+
+[files]
+"main.asm" = '''
+Counter .var 0
+.loop 4
+  Counter = Counter + 1
+  .if Counter > 2
+    .byte $BB
+  .endif
+.endloop
+'''
+
+[expect]
+rom = "BB BB"
+
+[expect.symbols]
+Counter = 4

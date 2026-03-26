@@ -1,0 +1,10 @@
+# Tests < (low byte) and > (high byte) expression operators
+
+[files]
+"main.asm" = '''
+ADDR = $1234
+.byte <ADDR, >ADDR
+'''
+
+[expect]
+rom = "34 12"

@@ -1,0 +1,16 @@
+# Tests .org, .byte, .word, .dword, .align, .storage, and .text directives
+
+[files]
+"main.asm" = '''
+.org $0100
+.byte 1, 2
+.word $1234
+.dword $12345678
+.align 16
+.storage 2, $AA
+.text "Hi", '!'
+'''
+
+[expect]
+rom = "01 02 34 12 78 56 34 12 00 00 00 00 00 00 00 00 AA AA 48 69 21"
+min_addr = "0100"

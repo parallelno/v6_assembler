@@ -1,0 +1,14 @@
+# Tests .optional block is pruned when its label is unreferenced
+
+[files]
+"main.asm" = '''
+.org $0100
+.optional
+Unused:
+    .byte $44
+.endoptional
+.byte $55
+'''
+
+[expect]
+rom = "55"

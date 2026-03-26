@@ -1,0 +1,14 @@
+# Tests .opt/.endopt aliases for .optional/.endoptional
+
+[files]
+"main.asm" = '''
+.org $0100
+    jmp Used
+.opt
+Used:
+    .byte $44
+.endopt
+'''
+
+[expect]
+rom = "C3 03 01 44"

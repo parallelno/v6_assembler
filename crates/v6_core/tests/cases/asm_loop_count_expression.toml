@@ -1,0 +1,12 @@
+# Tests loop count derived from an expression (N / 2)
+
+[files]
+"main.asm" = '''
+N = 6
+.loop N / 2
+  .byte $FF
+.endloop
+'''
+
+[expect]
+rom = "FF FF FF"

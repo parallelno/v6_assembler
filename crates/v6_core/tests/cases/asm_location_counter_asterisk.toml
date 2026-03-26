@@ -1,0 +1,10 @@
+# Tests * (location counter / current address) in expressions
+
+[files]
+"main.asm" = '''
+.org $0142
+.word *
+'''
+
+[expect]
+rom = "42 01"

@@ -1,0 +1,23 @@
+# Tests .filesize, .include, and .incbin with offset/length across multiple files
+
+[files]
+"main.asm" = '''
+.org $0100
+SIZE .filesize "assets/blob.bin"
+.include "inc.asm"
+.byte SIZE
+.incbin "assets/blob.bin", 1, 3
+'''
+"inc.asm" = """
+.byte $11
+.word $2233
+"""
+
+[binary_files]
+"assets/blob.bin" = "1020304050"
+
+[expect]
+rom = "11 33 22 05 20 30 40"
+
+[expect.symbols]
+SIZE = 5

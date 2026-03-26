@@ -1,0 +1,20 @@
+# Tests .if conditional assembly with true/false/expression branches
+
+[files]
+"main.asm" = '''
+.org $0100
+FLAG = 1
+.if FLAG
+    .byte $AA
+.endif
+.if 0
+    .error "should not execute"
+.endif
+.if FLAG == 0
+    .byte $BB
+.endif
+.byte $CC
+'''
+
+[expect]
+rom = "AA CC"

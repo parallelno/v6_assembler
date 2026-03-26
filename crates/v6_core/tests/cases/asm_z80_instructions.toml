@@ -1,0 +1,14 @@
+# Tests Z80 instructions assemble to i8080-compatible encodings
+
+cpu = "z80"
+
+[files]
+"main.asm" = '''
+.org $0100
+LD A, B
+LD HL, $0200
+JP $0100
+'''
+
+[expect]
+rom = "78 21 00 02 C3 00 01"
