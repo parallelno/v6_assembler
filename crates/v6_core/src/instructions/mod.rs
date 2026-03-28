@@ -1,7 +1,7 @@
 pub mod i8080;
 pub mod z80_compat;
 
-use crate::diagnostics::{AsmError, AsmResult};
+use crate::diagnostics::AsmResult;
 use crate::project::CpuMode;
 
 /// Operand types for parsed instructions
@@ -139,8 +139,9 @@ pub enum ParsedOperand {
     Reg(Register),
     RegPair(RegisterPair),
     Memory,          // M or (HL)
+    Mem16,           // (nn) 16-bit memory indirect
     Imm8,            // 8-bit immediate (expression evaluated separately)
-    Imm16,           // 16-bit address/immediate
+    Imm16,           // 16-bit immediate/address
     Port,            // 8-bit port (expression evaluated separately)
     Condition(Condition),
     RstNum(u8),      // RST number 0-7

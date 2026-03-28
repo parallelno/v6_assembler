@@ -1,10 +1,11 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use crate::diagnostics::{AsmError, AsmResult};
 use crate::symbols::{MacroDef, MacroParam, SymbolTable};
 
 const MAX_INCLUDE_DEPTH: usize = 16;
+#[allow(dead_code)]
 const MAX_MACRO_DEPTH: usize = 32;
+#[allow(dead_code)]
 const MAX_LOOP_ITERATIONS: usize = 100_000;
 
 /// A preprocessed source line with metadata
@@ -346,7 +347,7 @@ pub fn expand_macro(
     macro_def: &MacroDef,
     args: &[String],
     call_index: usize,
-    call_file: &str,
+    _call_file: &str,
     call_line: usize,
 ) -> AsmResult<Vec<SourceLine>> {
     let mut body_text = Vec::new();
@@ -534,4 +535,3 @@ pub fn parse_macro_args(s: &str) -> Vec<String> {
     }
     args
 }
-

@@ -1,7 +1,7 @@
-use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
+use crate::diagnostics::{AsmError, AsmResult};
 use crate::expr::{Expr, ExprParser};
 use crate::instructions::{
-    Condition, ParsedOperand, Register, RegisterPair, is_reserved_register,
+    Condition, ParsedOperand, Register, RegisterPair,
 };
 use crate::lexer::{LocatedToken, Token};
 use crate::project::CpuMode;
@@ -412,9 +412,9 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
         "var" => {
             // .var Name value
             if let Some(Token::Identifier(name)) = tokens.get(*pos).map(|t| &t.value) {
-                let name = name.clone();
+                let _name = name.clone();
                 *pos += 1;
-                let (expr, consumed) = parse_expr_from(tokens, *pos)?;
+                let (_expr, consumed) = parse_expr_from(tokens, *pos)?;
                 *pos += consumed;
                 // We return it as a Directive but actually the outer parse_line handles this
                 return Err(AsmError::new("INTERNAL_VAR_DEF"));
@@ -476,7 +476,7 @@ fn parse_operands(
     tokens: &[LocatedToken],
     pos: &mut usize,
     mnemonic: &str,
-    cpu_mode: CpuMode,
+    _cpu_mode: CpuMode,
 ) -> AsmResult<(Vec<ParsedOperand>, Vec<Expr>)> {
     let mut operands = Vec::new();
     let mut expressions = Vec::new();
@@ -586,26 +586,18 @@ fn parse_operands(
                             operands.push(ParsedOperand::Imm16);
                         }
                     } else {
-                        // Expression in parens
+                        // Expression in parens (direct memory reference, e.g. (nn))
                         let (expr, consumed) = parse_expr_from(tokens, *pos)?;
                         *pos += consumed;
                         expressions.push(expr);
-                        if needs_imm16(mnemonic) {
-                            operands.push(ParsedOperand::Imm16);
-                        } else {
-                            operands.push(ParsedOperand::Imm8);
-                        }
+                        operands.push(ParsedOperand::Mem16);
                     }
                 } else {
-                    // Expression in parens
+                    // Expression in parens (direct memory reference, e.g. (nn))
                     let (expr, consumed) = parse_expr_from(tokens, *pos)?;
                     *pos += consumed;
                     expressions.push(expr);
-                    if needs_imm16(mnemonic) {
-                        operands.push(ParsedOperand::Imm16);
-                    } else {
-                        operands.push(ParsedOperand::Imm8);
-                    }
+                    operands.push(ParsedOperand::Mem16);
                 }
             }
             Token::Number(_) | Token::CharLiteral(_) | Token::Operator(_) | Token::At => {

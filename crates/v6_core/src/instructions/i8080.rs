@@ -1,5 +1,5 @@
 use crate::diagnostics::{AsmError, AsmResult};
-use super::{EncodedInstruction, ParsedOperand, Register, RegisterPair, Condition};
+use super::{EncodedInstruction, ParsedOperand, RegisterPair};
 
 /// Encode an i8080 instruction
 pub fn encode(mnemonic: &str, operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {

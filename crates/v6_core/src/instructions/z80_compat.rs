@@ -69,6 +69,10 @@ fn encode_ld(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
         (ParsedOperand::RegPair(_), ParsedOperand::Imm16) => {
             i8080::encode("LXI", operands)
         }
+        // LD HL, (nn) — LHLD
+        (ParsedOperand::RegPair(RegisterPair::HL), ParsedOperand::Mem16) => {
+            i8080::encode("LHLD", operands)
+        }
         // LD A, (BC) / LD A, (DE)
         (ParsedOperand::Reg(Register::A), ParsedOperand::RegPair(RegisterPair::BC)) => {
             i8080::encode("LDAX", &[ParsedOperand::RegPair(RegisterPair::BC)])
@@ -84,17 +88,12 @@ fn encode_ld(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
             i8080::encode("STAX", &[ParsedOperand::RegPair(RegisterPair::DE)])
         }
         // LD A, (nn) — LDA
-        (ParsedOperand::Reg(Register::A), ParsedOperand::Imm16) => {
+        (ParsedOperand::Reg(Register::A), ParsedOperand::Mem16) => {
             i8080::encode("LDA", operands)
         }
         // LD (nn), A — STA
-        (ParsedOperand::Imm16, ParsedOperand::Reg(Register::A)) => {
+        (ParsedOperand::Mem16, ParsedOperand::Reg(Register::A)) => {
             i8080::encode("STA", operands)
-        }
-        // LD HL, (nn) — LHLD
-        (ParsedOperand::RegPair(RegisterPair::HL), ParsedOperand::Imm16) => {
-            // This could be LXI or LHLD depending on context - default to LXI
-            i8080::encode("LXI", operands)
         }
         // LD SP, HL — SPHL
         (ParsedOperand::RegPair(RegisterPair::SP), ParsedOperand::RegPair(RegisterPair::HL)) => {

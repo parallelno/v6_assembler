@@ -155,22 +155,22 @@ pub struct Assembler {
     project_dir: PathBuf,
 
     // Tracking for .optional blocks
-    optional_stack: Vec<OptionalBlock>,
-    optional_blocks: Vec<OptionalBlockInfo>,
+    _optional_stack: Vec<OptionalBlock>,
+    _optional_blocks: Vec<OptionalBlockInfo>,
 
     // Loop/if expansion depth tracking
     macro_depth: usize,
 }
 
 struct OptionalBlock {
-    start_idx: usize,
-    symbols_defined: Vec<String>,
+    _start_idx: usize,
+    _symbols_defined: Vec<String>,
 }
 
 struct OptionalBlockInfo {
-    start_line_idx: usize,
-    end_line_idx: usize,
-    symbols_defined: Vec<String>,
+    _start_line_idx: usize,
+    _end_line_idx: usize,
+    _symbols_defined: Vec<String>,
 }
 
 impl Assembler {
@@ -187,8 +187,8 @@ impl Assembler {
             errors: Vec::new(),
             quiet: false,
             project_dir,
-            optional_stack: Vec::new(),
-            optional_blocks: Vec::new(),
+            _optional_stack: Vec::new(),
+            _optional_blocks: Vec::new(),
             macro_depth: 0,
         }
     }
@@ -366,7 +366,7 @@ impl Assembler {
                     }
                 }
             }
-            Directive::Storage { length, filler } => {
+            Directive::Storage { length, filler: _ } => {
                 let len = self.eval_expr(length)? as u16;
                 self.record_line_address(file, line_num, self.pc);
                 self.pc = self.pc.wrapping_add(len);
@@ -831,7 +831,7 @@ impl Assembler {
             Directive::Text(items) => {
                 self.record_line_address(file, line_num, self.pc);
                 let bytes = self.encode_text_items(items);
-                let byte_count = bytes.len();
+                let _byte_count = bytes.len();
                 for b in bytes {
                     self.output.write_byte(self.pc, b);
                     self.pc = self.pc.wrapping_add(1);
