@@ -6,7 +6,7 @@ use clap::Parser;
 use v6_core::assembler::Assembler;
 use v6_core::diagnostics::{AsmError, AsmResult};
 use v6_core::fdd::filesystem::Filesystem;
-use v6_core::output::{generate_debug_json, generate_rom, rom_start_address, write_debug_json, write_rom, RomConfig};
+use v6_core::output::{generate_debug_json, generate_listing, generate_rom, rom_start_address, write_debug_json, write_listing, write_rom, RomConfig};
 use v6_core::preprocessor;
 use v6_core::project::ProjectConfig;
 use v6_core::symbols::SymbolTable;
@@ -39,6 +39,10 @@ struct Cli {
     /// Extra diagnostics
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
+
+    /// Generate listing file (.lst) alongside the ROM
+    #[arg(long = "lst")]
+    lst: bool,
 }
 
 fn main() {
@@ -244,6 +248,22 @@ fn cmd_assemble(project_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         write_debug_json(&debug_json, &debug_path)?;
         if cli.verbose {
             eprintln!("Debug JSON written to {}", debug_path.display());
+        }
+    }
+
+    // Generate listing file
+    let lst_path = if let Some(ref lst_path_str) = config.lst_path {
+        Some(project_dir.join(lst_path_str))
+    } else if cli.lst {
+        Some(rom_path.with_extension("lst"))
+    } else {
+        None
+    };
+    if let Some(lst_path) = lst_path {
+        let listing = generate_listing(&asm);
+        write_listing(&listing, &lst_path)?;
+        if cli.verbose {
+            eprintln!("Listing written to {}", lst_path.display());
         }
     }
 

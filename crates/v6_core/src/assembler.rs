@@ -18,6 +18,7 @@ pub struct OutputBuffer {
     data: Vec<Option<u8>>,
     min_addr: Option<u16>,
     max_addr: Option<u16>,
+    write_count: usize,
 }
 
 impl OutputBuffer {
@@ -26,6 +27,7 @@ impl OutputBuffer {
             data: vec![None; 65536],
             min_addr: None,
             max_addr: None,
+            write_count: 0,
         }
     }
 
@@ -33,6 +35,7 @@ impl OutputBuffer {
         self.data[addr as usize] = Some(byte);
         self.min_addr = Some(self.min_addr.map_or(addr, |m: u16| m.min(addr)));
         self.max_addr = Some(self.max_addr.map_or(addr, |m: u16| m.max(addr)));
+        self.write_count += 1;
     }
 
     pub fn write_bytes(&mut self, start_addr: u16, bytes: &[u8]) {
@@ -64,6 +67,14 @@ impl OutputBuffer {
 
     pub fn max_addr(&self) -> Option<u16> {
         self.max_addr
+    }
+
+    pub fn read_byte(&self, addr: u16) -> Option<u8> {
+        self.data[addr as usize]
+    }
+
+    pub fn write_count(&self) -> usize {
+        self.write_count
     }
 }
 
@@ -105,6 +116,16 @@ pub struct DataLineInfo {
     pub unit_bytes: usize,
 }
 
+/// A single entry for the listing file
+#[derive(Debug, Clone)]
+pub struct ListingLine {
+    pub file: String,
+    pub line_num: usize,
+    pub text: String,
+    pub addr: u16,
+    pub byte_count: usize,
+}
+
 /// Assembler settings that can be modified by .setting
 #[derive(Debug, Clone)]
 pub struct AssemblerSettings {
@@ -124,6 +145,7 @@ pub struct Assembler {
     pub symbols: SymbolTable,
     pub output: OutputBuffer,
     pub debug_info: DebugInfo,
+    pub listing_data: Vec<ListingLine>,
     pub pc: u16,
     pub cpu_mode: CpuMode,
     pub encoding: Encoding,
@@ -157,6 +179,7 @@ impl Assembler {
             symbols: SymbolTable::new(),
             output: OutputBuffer::new(),
             debug_info: DebugInfo::default(),
+            listing_data: Vec::new(),
             pc: 0,
             cpu_mode,
             encoding: Encoding::default(),
@@ -433,14 +456,32 @@ impl Assembler {
         while i < lines.len() {
             let line = &lines[i];
 
+            let pc_before = self.pc;
+            let wc_before = self.output.write_count();
+
             if let Some((macro_name, args)) = parse_macro_invocation(&line.text, &self.symbols) {
                 self.expand_macro_pass2(line, &macro_name, &args)?;
+                let byte_count = self.output.write_count() - wc_before;
+                self.listing_data.push(ListingLine {
+                    file: line.file.clone(),
+                    line_num: line.line_num,
+                    text: line.text.clone(),
+                    addr: pc_before,
+                    byte_count,
+                });
                 i += 1;
                 continue;
             }
 
             let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
             if tokens.is_empty() {
+                self.listing_data.push(ListingLine {
+                    file: line.file.clone(),
+                    line_num: line.line_num,
+                    text: line.text.clone(),
+                    addr: pc_before,
+                    byte_count: 0,
+                });
                 i += 1;
                 continue;
             }
@@ -451,6 +492,13 @@ impl Assembler {
                     match control {
                         ControlDirective::If(expr) => {
                             let end = self.find_matching_block_end(lines, i, BlockKind::If)?;
+                            self.listing_data.push(ListingLine {
+                                file: line.file.clone(),
+                                line_num: line.line_num,
+                                text: line.text.clone(),
+                                addr: self.pc,
+                                byte_count: 0,
+                            });
                             if self.eval_expr(expr)? != 0 {
                                 self.process_lines_pass2(&lines[i + 1..end])?;
                             }
@@ -469,6 +517,13 @@ impl Assembler {
                                     MAX_LOOP_ITERATIONS
                                 )));
                             }
+                            self.listing_data.push(ListingLine {
+                                file: line.file.clone(),
+                                line_num: line.line_num,
+                                text: line.text.clone(),
+                                addr: self.pc,
+                                byte_count: 0,
+                            });
                             for _ in 0..count as usize {
                                 self.process_lines_pass2(&lines[i + 1..end])?;
                             }
@@ -477,6 +532,13 @@ impl Assembler {
                         }
                         ControlDirective::Optional => {
                             let end = self.find_matching_block_end(lines, i, BlockKind::Optional)?;
+                            self.listing_data.push(ListingLine {
+                                file: line.file.clone(),
+                                line_num: line.line_num,
+                                text: line.text.clone(),
+                                addr: self.pc,
+                                byte_count: 0,
+                            });
                             if !self.settings.optional_enabled
                                 || self.should_include_optional_block(lines, i + 1, end)?
                             {
@@ -488,6 +550,13 @@ impl Assembler {
                         ControlDirective::EndIf
                         | ControlDirective::EndLoop
                         | ControlDirective::EndOptional => {
+                            self.listing_data.push(ListingLine {
+                                file: line.file.clone(),
+                                line_num: line.line_num,
+                                text: line.text.clone(),
+                                addr: self.pc,
+                                byte_count: 0,
+                            });
                             i += 1;
                             continue;
                         }
@@ -496,6 +565,14 @@ impl Assembler {
             }
 
             self.process_parsed_line_pass2(line, &parsed)?;
+            let byte_count = self.output.write_count() - wc_before;
+            self.listing_data.push(ListingLine {
+                file: line.file.clone(),
+                line_num: line.line_num,
+                text: line.text.clone(),
+                addr: pc_before,
+                byte_count,
+            });
             i += 1;
         }
         Ok(())
@@ -1015,4 +1092,3 @@ enum ControlDirective<'a> {
     Optional,
     EndOptional,
 }
-

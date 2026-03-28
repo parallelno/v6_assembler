@@ -11,6 +11,8 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub rom_path: Option<String>,
     #[serde(default)]
+    pub lst_path: Option<String>,
+    #[serde(default)]
     pub fdd_path: Option<String>,
     #[serde(default)]
     pub fdd_content_path: Option<String>,

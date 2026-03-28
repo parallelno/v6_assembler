@@ -7,6 +7,9 @@ use serde_json;
 use crate::assembler::{Assembler, DebugInfo};
 use crate::diagnostics::{AsmError, AsmResult};
 
+// Maximum number of bytes to display in the listing BYTES column
+const LISTING_MAX_BYTES: usize = 8;
+
 /// ROM output configuration
 pub struct RomConfig {
     pub rom_align: u16,
@@ -166,4 +169,51 @@ pub fn write_rom(rom: &[u8], path: &Path) -> AsmResult<()> {
 pub fn write_debug_json(json: &str, path: &Path) -> AsmResult<()> {
     std::fs::write(path, json)
         .map_err(|e| AsmError::new(format!("Failed to write debug file: {}", e)))
+}
+
+// ---- Listing file output ----
+
+/// Generate listing file content from assembled data
+pub fn generate_listing(asm: &Assembler) -> String {
+    let mut out = String::new();
+    out.push_str("ADDR   BYTES                    SOURCE\n");
+
+    for entry in &asm.listing_data {
+        let addr_str = if entry.byte_count > 0 {
+            format!("{:04X}", entry.addr)
+        } else {
+            "    ".to_string()
+        };
+
+        let bytes_str = if entry.byte_count > 0 {
+            let display_count = entry.byte_count.min(LISTING_MAX_BYTES);
+            let mut hex_parts: Vec<String> = Vec::with_capacity(display_count);
+            for i in 0..display_count {
+                let addr = entry.addr.wrapping_add(i as u16);
+                let b = asm.output.read_byte(addr).unwrap_or(0);
+                hex_parts.push(format!("{:02X}", b));
+            }
+            let hex = hex_parts.join(" ");
+            if entry.byte_count > LISTING_MAX_BYTES {
+                format!("{:<23}+", hex)
+            } else {
+                format!("{:<24}", hex)
+            }
+        } else {
+            " ".repeat(24)
+        };
+
+        out.push_str(&format!(
+            "{}   {} {:>5}  {}\n",
+            addr_str, bytes_str, entry.line_num, entry.text
+        ));
+    }
+
+    out
+}
+
+/// Write listing file to disk
+pub fn write_listing(listing: &str, path: &Path) -> AsmResult<()> {
+    std::fs::write(path, listing)
+        .map_err(|e| AsmError::new(format!("Failed to write listing file: {}", e)))
 }

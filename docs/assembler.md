@@ -1,10 +1,30 @@
 # Intel 8080/Z80 Assembler:
 
+## CLI Usage
+
+```
+v6asm <project.project.json> [options]
+v6asm --init <name>
+v6asm --deps <project.project.json> [options]
+```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<project>` | Project file (`.project.json`) to assemble |
+| `--init <name>` | Initialize a new project with the given name |
+| `--deps <project>` | Compile dependent projects before the main one |
+| `-q`, `--quiet` | Suppress `.print` output |
+| `-v`, `--verbose` | Extra diagnostics |
+| `--lst` | Generate a listing file (`.lst`) alongside the ROM. The listing is written to the same path as the ROM with a `.lst` extension. If `lstPath` is set in the project config, that path takes precedence. |
+
 ## Project Artifacts
 
 - `<project_name>.project.json` — project settings.
 - `<project_name>.debug.json` — debug metadata (tokens, labels, consts, breakpoints).
 - `<project_name>.rom` — Vector 06c executable loaded by the emulator.
+- `<project_name>.lst` — optional listing file showing addresses, emitted bytes, and source lines.
 - `<project_name>.ram_disk.bin` — RAM disk image (all eight supported disks).
 - `<name>.fdd` — floppy disk image (usually 820 KB). Add `"fddPath": "./out/<your_fdd_name>.fdd"` to settings to auto-load it on the next run.
   - If `fddContentPath` project setting is set, a new FDD image is rebuilt at `fddPath` on each successful ROM compile using that folder’s files (recursively).
@@ -21,6 +41,7 @@ All projects start with creating a `.project.json` file that declares the projec
   "asmPath": "prg_main.asm",
   "debugPath": "prg.debug.json",
   "romPath": "out\\prg.rom",
+  "lstPath": "out\\prg.lst",
   "fddPath": "out\\prg.fdd",
   "fddContentPath": "assets\\fdd_contents",
   "fddTemplatePath": "rds308.fdd",
@@ -40,6 +61,7 @@ All projects start with creating a `.project.json` file that declares the projec
 - **asmPath**: Entry assembly file to compile (e.g., `prg_main.asm`).
 - **debugPath**: (Optional) Path for the generated debug metadata (e.g., `prg.debug.json`).
 - **romPath**: (Optional) Output ROM path (e.g., `out\\prg.rom`).
+- **lstPath**: (Optional) Output listing file path (e.g., `out\\prg.lst`). When set, the assembler generates a `.lst` file showing the address, emitted bytes, source line number, and source text for every assembled line.
 - **fddPath**: (Optional) FDD image to boot; takes precedence over `romPath` when valid.
 - **fddContentPath**: (Optional) Folder whose files are packed into a fresh FDD image at `fddPath` after each successful ROM compile. Paths are resolved relative to the project file unless absolute; files are added recursively.
 - **fddTemplatePath**: (Optional) Template FDD image to start from when building the output at `fddPath`. If it contains the `"rds308.fdd"` string, the built-in template (comes with this extension) is used; other values resolve relative to the project file unless absolute.
