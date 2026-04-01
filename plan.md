@@ -1,6 +1,6 @@
 # Plan: Intel 8080/Z80 CLI Assembler & FDD Utility in Rust
 
-**TL;DR**: Build a Rust workspace containing two CLI binaries — `v6asm` (two-pass Intel 8080/Z80 assembler for Vector-06c) and `v6fdd` (FDD image builder) — plus a shared library crate. The assembler reads `.project.json`, assembles `.asm` files into `.rom` + `.debug.json`, and optionally builds FDD images. The FDD tool is also usable standalone. The project follows idiomatic Rust with `clap` for CLI, `serde` for JSON, and a clean separation between parsing, assembly, and output.
+**TL;DR**: Build a Rust workspace containing two CLI binaries — `v6asm` (two-pass Intel 8080/Z80 assembler for Vector-06c) and `v6fdd` (FDD image builder) — plus a shared library crate. The assembler compiles `.asm` source files into `.rom` binaries with optional listing output. The FDD tool is also usable standalone. The project follows idiomatic Rust with `clap` for CLI and a clean separation between parsing, assembly, and output.
 
 ---
 
@@ -14,7 +14,6 @@
 
 2. **Set up dependencies** in root `Cargo.toml`:
    - `clap` (derive) — CLI argument parsing
-   - `serde` + `serde_json` — project config & debug JSON
    - `thiserror` — error types
    - `log` + `env_logger` — diagnostics
    - Embed `rds308.fdd` as `include_bytes!` in `v6_core` so the built-in template ships with the binary
@@ -165,23 +164,11 @@ docs/                   (existing — unchanged)
 14. **ROM output** (`v6_core/src/output.rs`):
     - Extract contiguous byte range from output buffer
     - Apply `romAlign` padding (pad to next multiple with zero bytes)
-    - Write to `romPath`
+    - Write to output path
 
-15. **Debug JSON output** (`v6_core/src/output.rs`):
-    - Serialize to the format matching `test5.debug.json`:
-      ```json
-      {
-        "labels": { "name": { "addr": "0xNNNN", "src": "file.asm", "line": N } },
-        "consts": { "name": { "value": N, "hex": "0xNNNN", "line": N, "src": "file.asm" } },
-        "macros": { "name": { "src": "file.asm", "line": N, "params": ["p1", "p2"] } },
-        "projectFile": "name.project.json",
-        "lineAddresses": { "file.asm": { "lineN": ["0xADDR", ...] } },
-        "dataLines": { "file.asm": { "lineN": { "addr": "0xADDR", "byteLength": N, "unitBytes": N } } },
-        "breakpoints": {}
-      }
-      ```
-    - Local labels in debug output get a disambiguation suffix: `@name_N` (N = sequential index)
-    - Addresses formatted as `"0xNNNN"` (4-digit hex, uppercase)
+15. **Listing output** (`v6_core/src/output.rs`):
+    - Generate `.lst` file showing addresses, emitted bytes, and source lines
+    - Enabled via `--lst` CLI flag
 
 ---
 
@@ -206,16 +193,14 @@ docs/                   (existing — unchanged)
 ## Phase 8: Assembler CLI
 
 18. **v6asm CLI** (`v6asm/src/main.rs`):
-    - **Primary mode**: `v6asm <project.json>` — assemble the project
-      - Read and parse `.project.json`
-      - Resolve all paths relative to the project file
-      - Run preprocessor → pass 1 → pass 2 → emit ROM + debug JSON
-      - If `fddContentPath` is set and ROM compile succeeds: build FDD image at `fddPath` using `fddTemplatePath` (or built-in `rds308.fdd`) + all files in `fddContentPath` (recursively) + the ROM file
-    - **Init mode**: `v6asm --init <name>` — create a new project
-      - Generate `<name>.project.json` with sensible defaults
+    - **Primary mode**: `v6asm <source.asm> [options]` — assemble the source file
+      - Run preprocessor → pass 1 → pass 2 → emit ROM
+      - Output path defaults to `<source>.rom`, overridable with `-o`
+      - CPU mode via `--cpu i8080` (default) or `--cpu z80`
+      - ROM alignment via `--rom-align <n>`
+      - Optional listing file via `--lst`
+    - **Init mode**: `v6asm --init <name>` — create a new `.asm` file
       - Generate `<name>.asm` from the embedded template (`templates/main.asm`)
-      - Create `out/` directory
-    - **Dependency compile**: `v6asm --deps <project.json>` — compile all `*.project.json` in the project's `dependentProjectsDir` alphabetically, then the main project
     - **Options**:
       - `--quiet` / `-q` — suppress `.print` output
       - `--verbose` / `-v` — extra diagnostics
@@ -239,9 +224,8 @@ docs/                   (existing — unchanged)
     - FDD filesystem: save/read file, cluster allocation, directory management
 
 21. **Integration test — reference project**:
-    - Assemble `references/test_project/test5.project.json` using the built assembler
-    - Compare output ROM byte-for-byte against `references/test_project/test5.rom`
-    - Compare debug JSON against `references/test_project/test5.debug.json` (normalize key order)
+    - Assemble `references/test_project/main.asm` using the built assembler
+    - Compare output ROM byte-for-byte against `references/test_project/main.rom`
     - This is the primary validation gate — if this matches, the assembler is correct
 
 22. **Additional integration tests**:
@@ -258,9 +242,7 @@ docs/                   (existing — unchanged)
 - `references/fddutil/fddimage.ts` — FDD image/filesystem logic reference (port to Rust)
 - `references/fdd/rds308.fdd` — built-in FDD template (embed as `include_bytes!`)
 - `references/templates/main.asm` — project template for `--init`
-- `references/test_project/test5.project.json` — reference project config
-- `references/test_project/test5.rom` — expected ROM output (golden file for integration test)
-- `references/test_project/test5.debug.json` — expected debug output (golden file)
+- `references/test_project/main.rom` — expected ROM output (golden file for integration test)
 - `references/test_project/main.asm` — reference main assembly with `.include`, `.storage`, macros, local labels
 - `references/test_project/palette.asm` — included file with constants, local labels, `DB`/`DW` data
 - `references/test_project/test/palette2.asm` — nested include with local labels
@@ -270,10 +252,9 @@ docs/                   (existing — unchanged)
 
 1. `cargo build` — all three crates compile without errors
 2. `cargo test` — all unit tests pass (lexer, expression, instructions, symbols, preprocessor, FDD)
-3. **Golden file test**: `v6asm references/test_project/test5.project.json` → diff output ROM against `test5.rom` (byte-for-byte match)
-4. **Debug JSON test**: diff generated debug JSON against `test5.debug.json` (structural match with normalized key ordering)
-5. **FDD test**: `v6fdd -t references/fdd/rds308.fdd -i <test_file> -o test.fdd` → verify file is readable and directory entries are correct
-6. **Init test**: `v6asm --init myproject` → verify files created, then `v6asm myproject.project.json` succeeds
+3. **Golden file test**: `v6asm references/test_project/main.asm` → diff output ROM against `main.rom` (byte-for-byte match)
+4. **FDD test**: `v6fdd -t references/fdd/rds308.fdd -i <test_file> -o test.fdd` → verify file is readable and directory entries are correct
+5. **Init test**: `v6asm --init myproject` → verify `myproject.asm` created, then `v6asm myproject.asm` succeeds
 7. **Error test**: assemble intentionally broken `.asm` files → verify proper error messages and non-zero exit codes
 8. `cargo clippy` — no warnings
 9. `cargo fmt --check` — formatting conformance
@@ -286,6 +267,5 @@ docs/                   (existing — unchanged)
 - **64-bit signed arithmetic internally**: all expression evaluation uses `i64`, truncated to target width at emit time — avoids overflow issues
 - **Sparse output buffer**: `HashMap<u16, u8>` or a `Vec<Option<u8>>` of 65536 entries — handles `.storage` without filler (no bytes written but PC advances)
 - **Embedded assets**: `rds308.fdd` and `main.asm` template compiled into the binary via `include_bytes!`/`include_str!` — single-binary distribution, no external files needed
-- **CPU mode**: defaults to i8080, switchable via project `"cpu"` field or `--cpu` CLI flag
-- **Excluded from scope**: emulator-specific settings (`speed`, `viewMode`, `ramDiskPath`, `romHotReload`, etc.) are parsed from project JSON but not acted upon by the CLI — they exist only for the VS Code extension. The CLI passes them through to `debug.json` if relevant.
+- **CPU mode**: defaults to i8080, switchable via `--cpu` CLI flag
 - **No incremental compilation**: every invocation compiles from scratch — appropriate for the project size (Vector-06c ROMs are small)

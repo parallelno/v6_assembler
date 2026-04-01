@@ -67,22 +67,22 @@ Binaries are written to `target/release/v6asm` and `target/release/v6fdd`.
 
 ```bash
 # Create a new .asm file from the starter template
-v6asm --init myproject
+v6asm --init main
 
 # Assemble it
-v6asm myproject.asm
+v6asm main.asm
 
 # Custom output path
-v6asm myproject.asm -o out/program.rom
+v6asm main.asm -o out/program.rom
 
 # Z80 mode + listing
-v6asm myproject.asm --cpu z80 --lst
+v6asm main.asm --cpu z80 --lst
 ```
 
 After a successful build you will find:
 
-- `myproject.rom` — the assembled binary
-- `myproject.lst` — optional listing file (if `--lst` is passed)
+- `main.rom` — the assembled binary
+- `main.lst` — optional listing file (if `--lst` is passed)
 
 ---
 
