@@ -15,7 +15,7 @@ The workspace contains two standalone CLI tools:
 
 | Tool | Purpose |
 |------|---------|
-| `v6asm` | Assembler — reads a `.project.json` and produces a `.rom` + `.debug.json` |
+| `v6asm` | Assembler — compiles `.asm` source into a `.rom` binary |
 | `v6fdd` | FDD image utility — packs files into a `.fdd` disk image |
 
 ---
@@ -28,10 +28,8 @@ The workspace contains two standalone CLI tools:
 - **Preprocessor directives**: `.include`, `.macro`/`.endmacro`, `.loop`/`.endloop`, `.if`/`.endif`, `.optional`/`.endoptional`, `.incbin`, `.filesize`, `.print`, `.error`, `.setting`
 - **Local labels** (`@name`) with automatic scope management
 - **Mutable variables** (`.var`) alongside immutable constants (`=` / `EQU`)
-- **Debug JSON output** with label addresses, constants, macro metadata, and line→address mappings
 - **FDD image builder** — creates or patches 820 KB disk images from the built-in `rds308.fdd` template or a custom one
-- **Dependency compilation** — assemble a directory of dependent projects in alphabetical order before the main project
-- **`--init` scaffolding** — generate a ready-to-build project skeleton from a template
+- **`--init` scaffolding** — generate a ready-to-build `.asm` file from a starter template
 - Prebuilt binaries for **Linux**, **Windows**, and **macOS**
 
 ---
@@ -68,20 +66,23 @@ Binaries are written to `target/release/v6asm` and `target/release/v6fdd`.
 ## Quick Start
 
 ```bash
-# Create a new project
+# Create a new .asm file from the starter template
 v6asm --init myproject
 
 # Assemble it
-v6asm myproject.project.json
+v6asm myproject.asm
 
-# Assemble dependent projects first, then the main one
-v6asm --deps myproject.project.json
+# Custom output path
+v6asm myproject.asm -o out/program.rom
+
+# Z80 mode + listing
+v6asm myproject.asm --cpu z80 --lst
 ```
 
 After a successful build you will find:
 
 - `myproject.rom` — the assembled binary
-- `myproject.debug.json` — debug metadata consumed by the Devector emulator/extension
+- `myproject.lst` — optional listing file (if `--lst` is passed)
 
 ---
 
@@ -89,15 +90,17 @@ After a successful build you will find:
 
 ```
 USAGE:
-    v6asm <project.json>
+    v6asm <source.asm> [options]
     v6asm --init <name>
-    v6asm --deps <project.json>
 
 OPTIONS:
-    -q, --quiet      Suppress .print output
-    -v, --verbose    Extra diagnostics
-        --init       Create a new project skeleton
-        --deps       Compile all *.project.json in dependentProjectsDir, then the main project
+    -o, --output <path>   Output ROM path (default: <source>.rom)
+        --cpu <cpu>       Target CPU: i8080 (default) or z80
+        --rom-align <n>   ROM size alignment in bytes (default: 1)
+    -q, --quiet           Suppress .print output
+    -v, --verbose         Extra diagnostics
+        --lst             Generate a listing file (.lst) alongside the ROM
+        --init <name>     Create a new .asm file from the starter template
 ```
 
 ---
@@ -119,50 +122,6 @@ Example:
 ```bash
 v6fdd -t rds308.fdd -i myprogram.rom -i extra.dat -o out/disk.fdd
 ```
-
----
-
-## Project Configuration
-
-Every project is described by a `.project.json` file. Generate one with `v6asm --init <name>`.
-
-### Example
-
-```json
-{
-  "name": "prg",
-  "asmPath": "prg_main.asm",
-  "debugPath": "prg.debug.json",
-  "romPath": "out/prg.rom",
-  "fddPath": "out/prg.fdd",
-  "fddContentPath": "assets/fdd_contents",
-  "fddTemplatePath": "rds308.fdd",
-  "romAlign": 2,
-  "dependentProjectsDir": "deps",
-  "cpu": "i8080",
-  "settings": {
-    "speed": "max",
-    "viewMode": "noBorder",
-    "ramDiskPath": "out/prg.ram_disk.bin"
-  }
-}
-```
-
-### Fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | ✅ | Project name |
-| `asmPath` | ✅ | Entry `.asm` file |
-| `debugPath` | — | Path for the generated debug metadata |
-| `romPath` | — | Output ROM binary path |
-| `fddPath` | — | Output FDD image path |
-| `fddContentPath` | — | Folder whose files are packed into the FDD image after each successful build |
-| `fddTemplatePath` | — | Base FDD image; omit to use the built-in `rds308.fdd` |
-| `romAlign` | — | Pad ROM to the next multiple of this value (bytes) |
-| `dependentProjectsDir` | — | Directory of `*.project.json` files compiled before this project |
-| `cpu` | — | `"i8080"` (default) or `"z80"` |
-| `settings` | — | Emulator-specific preferences (pass-through to `debug.json`) |
 
 ---
 
@@ -286,10 +245,10 @@ crates/
       fdd/              ← FDD image read/write
       instructions/     ← Intel 8080 opcode table; Z80 compat mapping
       lexer.rs          ← tokenizer
-      output.rs         ← ROM binary + debug JSON emitter
+      output.rs         ← ROM binary + listing emitter
       parser.rs         ← directive/instruction parser
       preprocessor.rs   ← macro expansion, .include, .loop, .if
-      project.rs        ← .project.json types
+      project.rs        ← CPU mode types
       symbols.rs        ← symbol table (labels, consts, macros)
   v6asm/                ← assembler CLI binary
     src/
