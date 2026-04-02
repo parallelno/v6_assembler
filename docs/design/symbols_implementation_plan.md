@@ -146,15 +146,15 @@ Add `crates/v6_core/tests/debug_symbols_tests.rs` with test cases from the desig
 ### Phase 1 — Minimum Viable Symbols File
 **Goal:** Produce a `*.symbols.json` next to the ROM with labels, consts, lineAddresses, and dataLines.
 
-- [ ] **1.1** Add `serde` / `serde_json` to `v6_core` runtime dependencies (detail §1)
-- [ ] **1.2** Create `debug_symbols.rs` module with serializable types: `DebugSymbols`, `SymbolEntry`, `SymbolType`, `DataLineEntry` (detail §2)
-- [ ] **1.3** Register module in `lib.rs` (detail §8)
-- [ ] **1.4** Implement `build_debug_symbols` — convert `DebugInfo` labels and consts into `SymbolEntry` items, copy `line_addresses` and `data_lines` (detail §3)
-- [ ] **1.5** Implement `relativize` path helper (detail §5)
-- [ ] **1.6** Add `generate_debug_symbols` + `write_debug_symbols` in `output.rs` (detail §6)
-- [ ] **1.7** Wire into CLI — add `--symbols` flag, emit `*.symbols.json` when set (detail §7)
-- [ ] **1.8** Record variables (`.var`) into `debug_info.consts` during pass 2 — `VarDef` currently does not populate `debug_info.consts`, but the design doc requires variables to appear as `const` type
-- [ ] **1.9** Unit tests: label, const, variable-as-const, dataLines structure, lineAddresses multi-address, `relativize` path helper (detail §9, cases 1, 4, 5)
+- [x] **1.1** Add `serde` / `serde_json` to `v6_core` runtime dependencies (detail §1)
+- [x] **1.2** Create `debug_symbols.rs` module with serializable types: `DebugSymbols`, `SymbolEntry`, `SymbolType`, `DataLineEntry` (detail §2)
+- [x] **1.3** Register module in `lib.rs` (detail §8)
+- [x] **1.4** Implement `build_debug_symbols` — convert `DebugInfo` labels and consts into `SymbolEntry` items, copy `line_addresses` and `data_lines` (detail §3)
+- [x] **1.5** Implement `relativize` path helper (detail §5)
+- [x] **1.6** Add `generate_debug_symbols` + `write_debug_symbols` in `output.rs` (detail §6)
+- [x] **1.7** Wire into CLI — add `--symbols` flag, emit `*.symbols.json` when set (detail §7)
+- [x] **1.8** Record variables (`.var`) into `debug_info.consts` during pass 2 — `VarDef` currently does not populate `debug_info.consts`, but the design doc requires variables to appear as `const` type
+- [x] **1.9** Unit tests: label, const, variable-as-const, dataLines structure, lineAddresses multi-address, `relativize` path helper (detail §9, cases 1, 4, 5)
 
 ### Phase 2 — Macros & Macro Params
 **Goal:** Add macro and macroparam symbol entries with default value handling.

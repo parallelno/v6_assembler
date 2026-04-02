@@ -5,7 +5,7 @@ use std::time::Instant;
 use clap::Parser;
 use v6_core::assembler::Assembler;
 use v6_core::diagnostics::{AsmError, AsmResult};
-use v6_core::output::{generate_listing, generate_rom, rom_start_address, write_listing, write_rom, RomConfig};
+use v6_core::output::{generate_debug_symbols, generate_listing, generate_rom, rom_start_address, write_debug_symbols, write_listing, write_rom, RomConfig};
 use v6_core::preprocessor;
 use v6_core::project::CpuMode;
 use v6_core::symbols::SymbolTable;
@@ -47,6 +47,10 @@ struct Cli {
     /// Generate listing file (.lst) alongside the ROM
     #[arg(long = "lst")]
     lst: bool,
+
+    /// Generate debug symbols file (.symbols.json) alongside the ROM
+    #[arg(long = "symbols")]
+    symbols: bool,
 }
 
 fn main() {
@@ -196,6 +200,16 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         write_listing(&listing, &lst_path)?;
         if cli.verbose {
             eprintln!("Listing written to {}", lst_path.display());
+        }
+    }
+
+    // Generate debug symbols file
+    if cli.symbols {
+        let symbols_path = rom_path.with_extension("symbols.json");
+        let json = generate_debug_symbols(&asm)?;
+        write_debug_symbols(&json, &symbols_path)?;
+        if cli.verbose {
+            eprintln!("Debug symbols written to {}", symbols_path.display());
         }
     }
 

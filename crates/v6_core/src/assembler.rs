@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
 use crate::encoding::{Encoding, EncodingCase, EncodingType};
@@ -191,6 +191,10 @@ impl Assembler {
             _optional_blocks: Vec::new(),
             macro_depth: 0,
         }
+    }
+
+    pub fn project_dir(&self) -> &Path {
+        &self.project_dir
     }
 
     /// Assemble preprocessed source lines (two-pass)
@@ -631,6 +635,11 @@ impl Assembler {
                     } else {
                         self.symbols.define_variable(name, val, &line.file, line.line_num)?;
                     }
+                    self.debug_info.consts.insert(name.to_string(), crate::assembler::ConstInfo {
+                        value: val,
+                        line: line.line_num,
+                        src: line.file.clone(),
+                    });
                 }
                 ParsedLine::Instruction { mnemonic, operands, expressions } => {
                     self.record_line_address(&line.file, line.line_num, self.pc);

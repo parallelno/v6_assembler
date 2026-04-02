@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::assembler::Assembler;
+use crate::debug_symbols::build_debug_symbols;
 use crate::diagnostics::{AsmError, AsmResult};
 
 // Maximum number of bytes to display in the listing BYTES column
@@ -90,4 +91,19 @@ pub fn generate_listing(asm: &Assembler) -> String {
 pub fn write_listing(listing: &str, path: &Path) -> AsmResult<()> {
     std::fs::write(path, listing)
         .map_err(|e| AsmError::new(format!("Failed to write listing file: {}", e)))
+}
+
+// ---- Debug symbols output ----
+
+/// Generate debug symbols JSON from assembled data
+pub fn generate_debug_symbols(asm: &Assembler) -> AsmResult<String> {
+    let debug_symbols = build_debug_symbols(&asm.debug_info, asm.project_dir());
+    serde_json::to_string_pretty(&debug_symbols)
+        .map_err(|e| AsmError::new(format!("Failed to serialize debug symbols: {}", e)))
+}
+
+/// Write debug symbols JSON to disk
+pub fn write_debug_symbols(json: &str, path: &Path) -> AsmResult<()> {
+    std::fs::write(path, json)
+        .map_err(|e| AsmError::new(format!("Failed to write debug symbols file: {}", e)))
 }
