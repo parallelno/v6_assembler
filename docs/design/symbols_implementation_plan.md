@@ -174,8 +174,8 @@ Add `crates/v6_core/tests/debug_symbols_tests.rs` with test cases from the desig
 ### Phase 4 — Testing suite
 **Goal:** Validate correctness across included files and local label disambiguation.
 
-- [ ] **4.1** Unit tests: multi-file project with `.include` — paths in output are relative (detail §9, case 6)
-- [ ] **4.2** Unit tests: local label disambiguation `@loop_0`, `@loop_1` (detail §9, case 2)
-- [ ] **4.3** Integration test: compile sample project, assert all three top-level sections exist with correct structure
+- [x] **4.1** Unit tests: multi-file project with `.include` — paths in output are relative (detail §9, case 6)
+- [x] **4.2** Unit tests: local label disambiguation `@loop_0`, `@loop_1` (detail §9, case 2)
+- [x] **4.3** Integration test: compile sample project, assert all three top-level sections exist with correct structure
 
 ---

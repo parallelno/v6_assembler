@@ -434,3 +434,137 @@ Outer:
     let inner = ds.symbols.get("Inner").expect("Inner missing");
     assert_eq!(inner.sym_type, SymbolType::Func);
 }
+
+// ── multi-file project with .include ────────────────────────────────────────
+
+#[test]
+fn multi_file_paths_are_relative() {
+    let proj = TestProject::new(&[
+        ("main.asm", "\
+.org 0x100
+Start:
+    nop
+    .include \"sub/helper.asm\"
+End:
+    hlt
+"),
+        ("sub/helper.asm", "\
+Helper:
+    nop
+    ret
+"),
+    ]);
+    let asm = proj.assemble().unwrap();
+    let ds = build_debug_symbols(&asm.debug_info, &asm.symbols, asm.project_dir());
+
+    // Labels from main file
+    let start = ds.symbols.get("Start").expect("Start missing");
+    assert_eq!(start.path, "main.asm");
+
+    // Labels from included file should have relative path with forward slashes
+    let helper = ds.symbols.get("Helper").expect("Helper missing");
+    assert_eq!(helper.path, "sub/helper.asm");
+
+    // line_addresses should contain both files with relative paths
+    assert!(ds.line_addresses.contains_key("main.asm"), "main.asm missing from line_addresses");
+    assert!(ds.line_addresses.contains_key("sub/helper.asm"), "sub/helper.asm missing from line_addresses");
+}
+
+// ── local label disambiguation ──────────────────────────────────────────────
+
+#[test]
+fn local_label_disambiguation() {
+    let proj = TestProject::new(&[("main.asm", "\
+.org 0x100
+Func1:
+    nop
+@loop:
+    nop
+    jmp @loop
+Func2:
+    nop
+@loop:
+    nop
+    jmp @loop
+")]);
+    let asm = proj.assemble().unwrap();
+    let ds = build_debug_symbols(&asm.debug_info, &asm.symbols, asm.project_dir());
+
+    let loop0 = ds.symbols.get("@loop_0").expect("@loop_0 missing");
+    assert_eq!(loop0.sym_type, SymbolType::Label);
+    assert_eq!(loop0.path, "main.asm");
+
+    let loop1 = ds.symbols.get("@loop_1").expect("@loop_1 missing");
+    assert_eq!(loop1.sym_type, SymbolType::Label);
+    assert_eq!(loop1.path, "main.asm");
+
+    // They should have different addresses
+    assert_ne!(loop0.value, loop1.value);
+}
+
+// ── integration test ────────────────────────────────────────────────────────
+
+#[test]
+fn integration_full_project() {
+    let proj = TestProject::new(&[
+        ("main.asm", "\
+MAX_SIZE = 64
+.org 0x100
+Start:
+    nop
+    call MyFunc
+@loop:
+    jmp @loop
+.byte 0xAA, 0xBB
+.word 0x1234
+    .include \"lib/util.asm\"
+.optional
+MyFunc:
+    ret
+.endoptional
+"),
+        ("lib/util.asm", "\
+Util:
+    nop
+    ret
+"),
+    ]);
+    let asm = proj.assemble().unwrap();
+    let json = generate_debug_symbols(&asm).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    // All three top-level sections exist
+    let symbols = parsed.get("symbols").expect("symbols section missing").as_object().unwrap();
+    let line_addrs = parsed.get("lineAddresses").expect("lineAddresses section missing").as_object().unwrap();
+    let data_lines = parsed.get("dataLines").expect("dataLines section missing").as_object().unwrap();
+
+    // Symbols from both files
+    assert!(symbols.contains_key("Start"));
+    assert!(symbols.contains_key("Util"));
+    assert!(symbols.contains_key("MAX_SIZE"));
+    assert!(symbols.contains_key("MyFunc"));
+
+    // Types
+    assert_eq!(symbols["Start"]["type"], "label");
+    assert_eq!(symbols["MAX_SIZE"]["type"], "const");
+    assert_eq!(symbols["MyFunc"]["type"], "func");
+    assert_eq!(symbols["Util"]["type"], "label");
+
+    // Paths are relative
+    assert_eq!(symbols["Start"]["path"], "main.asm");
+    assert_eq!(symbols["Util"]["path"], "lib/util.asm");
+
+    // Local label disambiguation
+    assert!(symbols.contains_key("@loop_0"));
+
+    // lineAddresses has entries for both files
+    assert!(line_addrs.contains_key("main.asm"));
+    assert!(line_addrs.contains_key("lib/util.asm"));
+
+    // dataLines has entries
+    assert!(data_lines.contains_key("main.asm"));
+    let main_data = data_lines["main.asm"].as_object().unwrap();
+    // .byte on line 8, .word on line 9
+    assert!(main_data.contains_key("8") || main_data.contains_key("9"),
+        "expected data line entries for .byte/.word directives, got keys: {:?}", main_data.keys().collect::<Vec<_>>());
+}
