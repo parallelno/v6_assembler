@@ -49,13 +49,18 @@ pub struct DataLineEntry {
 pub fn build_debug_symbols(info: &DebugInfo, symbols: &SymbolTable, project_dir: &Path) -> DebugSymbols {
     let mut syms = HashMap::new();
 
-    // Labels
+    // Labels (labels inside .optional blocks are emitted as func)
     for (name, label) in &info.labels {
+        let sym_type = if info.optional_labels.contains(name) {
+            SymbolType::Func
+        } else {
+            SymbolType::Label
+        };
         syms.insert(name.clone(), SymbolEntry {
             value: label.addr as i64,
             path: relativize(&label.src, project_dir),
             line: label.line,
-            sym_type: SymbolType::Label,
+            sym_type,
         });
     }
 

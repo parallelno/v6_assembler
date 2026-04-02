@@ -166,10 +166,10 @@ Add `crates/v6_core/tests/debug_symbols_tests.rs` with test cases from the desig
 ### Phase 3 — Function Detection
 **Goal:** Tag labels inside `.optional`/`.endoptional` blocks as `func` type.
 
-- [ ] **3.1** Add `optional_depth: usize` to `Assembler`, increment/decrement around recursive `.optional` block processing in pass 2 (detail §4)
-- [ ] **3.2** Add `optional_labels: HashSet<String>` to `DebugInfo`; populate when a label is defined while `optional_depth > 0` (detail §4)
-- [ ] **3.3** Update `build_debug_symbols` to check membership and emit `func` vs `label` (detail §4)
-- [ ] **3.4** Unit tests: func detection, label outside optional stays `label` (detail §9, case 7)
+- [x] **3.1** Add `optional_depth: usize` to `Assembler`, increment/decrement around recursive `.optional` block processing in pass 2 (detail §4)
+- [x] **3.2** Add `optional_labels: HashSet<String>` to `DebugInfo`; populate when a label is defined while `optional_depth > 0` (detail §4)
+- [x] **3.3** Update `build_debug_symbols` to check membership and emit `func` vs `label` (detail §4)
+- [x] **3.4** Unit tests: func detection, label outside optional stays `label` (detail §9, case 7)
 
 ### Phase 4 — Testing suite
 **Goal:** Validate correctness across included files and local label disambiguation.

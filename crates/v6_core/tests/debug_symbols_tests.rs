@@ -336,3 +336,101 @@ fn macro_no_params() {
     let param_keys: Vec<_> = ds.symbols.keys().filter(|k| k.starts_with("DoNothing.")).collect();
     assert!(param_keys.is_empty(), "expected no macroparam entries, got {:?}", param_keys);
 }
+
+// ── func detection (.optional blocks) ───────────────────────────────────────
+
+#[test]
+fn label_inside_optional_is_func() {
+    let proj = TestProject::new(&[("main.asm", "\
+.org 0x100
+    jmp MyFunc
+.optional
+MyFunc:
+    nop
+    ret
+.endoptional
+")]);
+    let asm = proj.assemble().unwrap();
+    let ds = build_debug_symbols(&asm.debug_info, &asm.symbols, asm.project_dir());
+
+    let entry = ds.symbols.get("MyFunc").expect("MyFunc label missing");
+    assert_eq!(entry.sym_type, SymbolType::Func);
+    assert_eq!(entry.value, 0x103); // after 3-byte JMP
+}
+
+#[test]
+fn label_outside_optional_stays_label() {
+    let proj = TestProject::new(&[("main.asm", "\
+.org 0x100
+Start:
+    jmp MyFunc
+.optional
+MyFunc:
+    nop
+    ret
+.endoptional
+End:
+    hlt
+")]);
+    let asm = proj.assemble().unwrap();
+    let ds = build_debug_symbols(&asm.debug_info, &asm.symbols, asm.project_dir());
+
+    let start = ds.symbols.get("Start").expect("Start missing");
+    assert_eq!(start.sym_type, SymbolType::Label);
+
+    let end = ds.symbols.get("End").expect("End missing");
+    assert_eq!(end.sym_type, SymbolType::Label);
+
+    let func = ds.symbols.get("MyFunc").expect("MyFunc missing");
+    assert_eq!(func.sym_type, SymbolType::Func);
+}
+
+#[test]
+fn multiple_labels_in_optional_all_func() {
+    let proj = TestProject::new(&[("main.asm", "\
+.org 0x100
+    jmp Func1
+    jmp Func2
+.optional
+Func1:
+    nop
+Func2:
+    ret
+.endoptional
+")]);
+    let asm = proj.assemble().unwrap();
+    let ds = build_debug_symbols(&asm.debug_info, &asm.symbols, asm.project_dir());
+
+    let f1 = ds.symbols.get("Func1").expect("Func1 missing");
+    assert_eq!(f1.sym_type, SymbolType::Func);
+
+    let f2 = ds.symbols.get("Func2").expect("Func2 missing");
+    assert_eq!(f2.sym_type, SymbolType::Func);
+}
+
+#[test]
+fn nested_optional_labels_are_func() {
+    let proj = TestProject::new(&[("main.asm", "\
+.org 0x100
+    jmp Outer
+.optional
+Outer:
+    nop
+    call Inner
+    .optional
+    Inner:
+        nop
+        ret
+    .endoptional
+    ret
+.endoptional
+")]);
+    let asm = proj.assemble().unwrap();
+    let ds = build_debug_symbols(&asm.debug_info, &asm.symbols, asm.project_dir());
+
+    let outer = ds.symbols.get("Outer").expect("Outer missing");
+    assert_eq!(outer.sym_type, SymbolType::Func);
+
+    let inner = ds.symbols.get("Inner").expect("Inner missing");
+    assert_eq!(inner.sym_type, SymbolType::Func);
+}

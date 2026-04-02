@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
@@ -86,6 +86,7 @@ pub struct DebugInfo {
     pub macros: HashMap<String, MacroDebugInfo>,
     pub line_addresses: HashMap<String, HashMap<usize, Vec<u16>>>,
     pub data_lines: HashMap<String, HashMap<usize, DataLineInfo>>,
+    pub optional_labels: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +161,9 @@ pub struct Assembler {
 
     // Loop/if expansion depth tracking
     macro_depth: usize,
+
+    // Depth counter for .optional block nesting (pass 2)
+    optional_depth: usize,
 }
 
 struct OptionalBlock {
@@ -190,6 +194,7 @@ impl Assembler {
             _optional_stack: Vec::new(),
             _optional_blocks: Vec::new(),
             macro_depth: 0,
+            optional_depth: 0,
         }
     }
 
@@ -546,7 +551,9 @@ impl Assembler {
                             if !self.settings.optional_enabled
                                 || self.should_include_optional_block(lines, i + 1, end)?
                             {
+                                self.optional_depth += 1;
                                 self.process_lines_pass2(&lines[i + 1..end])?;
+                                self.optional_depth -= 1;
                             }
                             i = end + 1;
                             continue;
@@ -594,6 +601,9 @@ impl Assembler {
                         src: line.file.clone(),
                         line: line.line_num,
                     });
+                    if self.optional_depth > 0 {
+                        self.debug_info.optional_labels.insert(name.clone());
+                    }
                 }
                 ParsedLine::LocalLabel(name) => {
                     self.symbols.define_local_label(name, self.pc, &line.file, line.line_num)?;
