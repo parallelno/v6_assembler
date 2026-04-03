@@ -92,9 +92,9 @@ fn screencode_commodore(ch: char, case: EncodingCase) -> u8 {
 
 impl EncodingType {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "ascii" => Some(EncodingType::Ascii),
-            "screencodecommodore" => Some(EncodingType::ScreencodeCommodore),
+        match s.to_uppercase().as_str() {
+            "ASCII" => Some(EncodingType::Ascii),
+            "SCREENCODECOMMODORE" => Some(EncodingType::ScreencodeCommodore),
             _ => None,
         }
     }
@@ -102,10 +102,10 @@ impl EncodingType {
 
 impl EncodingCase {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "mixed" => Some(EncodingCase::Mixed),
-            "lower" => Some(EncodingCase::Lower),
-            "upper" => Some(EncodingCase::Upper),
+        match s.to_uppercase().as_str() {
+            "MIXED" => Some(EncodingCase::Mixed),
+            "LOWER" => Some(EncodingCase::Lower),
+            "UPPER" => Some(EncodingCase::Upper),
             _ => None,
         }
     }

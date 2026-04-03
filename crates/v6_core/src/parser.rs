@@ -105,7 +105,7 @@ pub fn parse_line(tokens: &[LocatedToken], cpu_mode: CpuMode) -> AsmResult<Vec<P
         pos += 1;
         if pos < tokens.len() {
             if let Token::Identifier(name) = &tokens[pos].value {
-                let directive_name = name.to_lowercase();
+                let directive_name = name.to_uppercase();
                 pos += 1;
                 let directive = parse_directive(&directive_name, tokens, &mut pos)?;
                 results.push(ParsedLine::Directive(directive));
@@ -146,13 +146,13 @@ pub fn parse_line(tokens: &[LocatedToken], cpu_mode: CpuMode) -> AsmResult<Vec<P
         // Check for NAME .filesize "path"
         if let Some(Token::Dot) = tokens.get(pos + 1).map(|t| &t.value) {
             if let Some(Token::Identifier(dname)) = tokens.get(pos + 2).map(|t| &t.value) {
-                if dname.to_lowercase() == "filesize" {
+                if dname.to_uppercase() == "FILESIZE" {
                     pos += 3;
                     let path = parse_string_arg(tokens, &mut pos)?;
                     results.push(ParsedLine::Directive(Directive::FileSize { name, path }));
                     return Ok(results);
                 }
-                if dname.to_lowercase() == "var" {
+                if dname.to_uppercase() == "VAR" {
                     pos += 3;
                     let (expr, _) = parse_expr_from(tokens, pos)?;
                     results.push(ParsedLine::VarDef { name, expr });
@@ -247,16 +247,16 @@ fn parse_labels(tokens: &[LocatedToken], mut pos: usize, results: &mut Vec<Parse
 
 fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmResult<Directive> {
     match name {
-        "org" => {
+        "ORG" => {
             let (expr, consumed) = parse_expr_from(tokens, *pos)?;
             *pos += consumed;
             Ok(Directive::Org(expr))
         }
-        "include" => {
+        "INCLUDE" => {
             let path = parse_string_arg(tokens, pos)?;
             Ok(Directive::Include(path))
         }
-        "incbin" => {
+        "INCBIN" => {
             let path = parse_string_arg(tokens, pos)?;
             let mut offset = None;
             let mut length = None;
@@ -272,7 +272,7 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             }
             Ok(Directive::IncBin { path, offset, length })
         }
-        "macro" => {
+        "MACRO" => {
             // Parse macro name and params
             let macro_name = if let Some(Token::Identifier(n)) = tokens.get(*pos).map(|t| &t.value) {
                 let n = n.clone();
@@ -314,22 +314,22 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             }
             Ok(Directive::MacroDef { name: macro_name, params, body_start: true })
         }
-        "endmacro" => Ok(Directive::EndMacro),
-        "if" => {
+        "ENDMACRO" => Ok(Directive::EndMacro),
+        "IF" => {
             let (expr, consumed) = parse_expr_from(tokens, *pos)?;
             *pos += consumed;
             Ok(Directive::If(expr))
         }
-        "endif" => Ok(Directive::EndIf),
-        "loop" => {
+        "ENDIF" => Ok(Directive::EndIf),
+        "LOOP" => {
             let (expr, consumed) = parse_expr_from(tokens, *pos)?;
             *pos += consumed;
             Ok(Directive::Loop(expr))
         }
-        "endloop" | "endl" => Ok(Directive::EndLoop),
-        "optional" | "opt" => Ok(Directive::Optional),
-        "endoptional" | "endopt" => Ok(Directive::EndOptional),
-        "setting" => {
+        "ENDLOOP" | "ENDL" => Ok(Directive::EndLoop),
+        "OPTIONAL" | "OPT" => Ok(Directive::Optional),
+        "ENDOPTIONAL" | "ENDOPT" => Ok(Directive::EndOptional),
+        "SETTING" => {
             let mut pairs = Vec::new();
             while *pos < tokens.len() {
                 if let Some(Token::Identifier(key)) = tokens.get(*pos).map(|t| &t.value) {
@@ -359,12 +359,12 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             }
             Ok(Directive::Setting(pairs))
         }
-        "align" => {
+        "ALIGN" => {
             let (expr, consumed) = parse_expr_from(tokens, *pos)?;
             *pos += consumed;
             Ok(Directive::Align(expr))
         }
-        "storage" => {
+        "STORAGE" => {
             let (length, consumed) = parse_expr_from(tokens, *pos)?;
             *pos += consumed;
             let filler = if eat_comma(tokens, pos) {
@@ -376,23 +376,23 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             };
             Ok(Directive::Storage { length, filler })
         }
-        "byte" | "db" => {
+        "BYTE" | "DB" => {
             let exprs = parse_expr_list(tokens, pos)?;
             Ok(Directive::Byte(exprs))
         }
-        "word" | "dw" => {
+        "WORD" | "DW" => {
             let exprs = parse_expr_list(tokens, pos)?;
             Ok(Directive::Word(exprs))
         }
-        "dword" | "dd" => {
+        "DWORD" | "DD" => {
             let exprs = parse_expr_list(tokens, pos)?;
             Ok(Directive::Dword(exprs))
         }
-        "text" => {
+        "TEXT" => {
             let items = parse_text_items(tokens, pos)?;
             Ok(Directive::Text(items))
         }
-        "encoding" => {
+        "ENCODING" => {
             let enc_type = parse_string_arg(tokens, pos)?;
             let case = if eat_comma(tokens, pos) {
                 Some(parse_string_arg(tokens, pos)?)
@@ -401,15 +401,15 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             };
             Ok(Directive::Encoding { enc_type, case })
         }
-        "print" => {
+        "PRINT" => {
             let args = parse_print_args(tokens, pos)?;
             Ok(Directive::Print(args))
         }
-        "error" => {
+        "ERROR" => {
             let args = parse_print_args(tokens, pos)?;
             Ok(Directive::Error(args))
         }
-        "var" => {
+        "VAR" => {
             // .var Name value
             if let Some(Token::Identifier(name)) = tokens.get(*pos).map(|t| &t.value) {
                 let _name = name.clone();
@@ -421,7 +421,7 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             }
             Err(AsmError::new("Expected variable name after .var"))
         }
-        "filesize" => {
+        "FILESIZE" => {
             // .filesize Name, "path" - but name comes before the dot usually
             let path = parse_string_arg(tokens, pos)?;
             Ok(Directive::FileSize { name: String::new(), path })

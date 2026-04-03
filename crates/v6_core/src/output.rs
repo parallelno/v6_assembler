@@ -53,7 +53,7 @@ pub fn generate_listing(asm: &Assembler) -> String {
     out.push_str("ADDR   BYTES                    SOURCE\n");
 
     for entry in &asm.listing_data {
-        let is_storage = entry.text.trim_start().to_ascii_lowercase().starts_with(".storage");
+        let is_storage = entry.text.trim_start().to_ascii_uppercase().starts_with(".STORAGE");
         let addr_str = if entry.byte_count > 0 || is_storage {
             format!("{:04X}", entry.addr)
         } else {

@@ -1,5 +1,7 @@
 # Directives
 
+All directive names are **case-insensitive**: `.org`, `.ORG`, and `.Org` are equivalent.
+
 ## `.org`
 
 Sets the program counter to a specific address. Accepts decimal, `0x..`, or `$..` literals.

@@ -2,6 +2,12 @@
 
 By default the assembler targets the Intel 8080 instruction set. Use `--cpu z80` to enable a compatibility subset of Zilog Z80 mnemonics that map 1:1 to the 8080 instruction encodings (including Z80 aliases like `LD (N),A` and `ADD HL,BC`). Pure Z80-only features such as IX/IY indexed addressing are not supported.
 
+## Case Sensitivity
+
+Instruction mnemonics, register names, directives, and condition codes are all **case-insensitive**. `MOV`, `mov`, and `Mov` are equivalent; `HL`, `hl`, and `Hl` all refer to the same register pair; `.ORG`, `.org`, and `.Org` are the same directive.
+
+Symbol names (labels, constants, macros) **are** case-sensitive: `Start` and `start` are different symbols.
+
 ## Comments
 
 The assembler supports two comment styles:
