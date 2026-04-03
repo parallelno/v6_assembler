@@ -85,7 +85,7 @@ pub fn build_debug_symbols(info: &DebugInfo, symbols: &SymbolTable, project_dir:
         });
 
         // Emit macroparam entries — get defaults from MacroDef
-        if let Some(macro_def) = all_macros.get(name) {
+        if let Some(macro_def) = all_macros.get(&name.to_uppercase()) {
             for param in &macro_def.params {
                 let key = format!("{}.{}", name, param.name);
                 let value = param.default.as_ref()

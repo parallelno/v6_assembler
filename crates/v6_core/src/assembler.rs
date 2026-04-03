@@ -1076,8 +1076,8 @@ impl Assembler {
 
     /// Collect macro debug info after preprocessing
     pub fn collect_macro_debug_info(&mut self) {
-        for (name, def) in self.symbols.all_macros() {
-            self.debug_info.macros.insert(name.clone(), MacroDebugInfo {
+        for (_key, def) in self.symbols.all_macros() {
+            self.debug_info.macros.insert(def.name.clone(), MacroDebugInfo {
                 src: def.file.clone(),
                 line: def.line,
                 params: def.params.iter().map(|p| p.name.clone()).collect(),

@@ -2,6 +2,11 @@ use std::collections::HashMap;
 use crate::diagnostics::{AsmError, AsmResult};
 use crate::expr::Expr;
 
+/// Normalize a symbol name for case-insensitive lookup.
+fn ci(name: &str) -> String {
+    name.to_uppercase()
+}
+
 /// Information about a defined symbol
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
@@ -92,7 +97,8 @@ impl SymbolTable {
             local_index: None,
         };
 
-        if let Some(existing) = self.globals.get(name) {
+        let key = ci(name);
+        if let Some(existing) = self.globals.get(&key) {
             if !existing.is_mutable && existing.value.is_some() {
                 // Allow redef if same value (pass 2 redefining)
                 if existing.value != Some(addr as i64) {
@@ -101,7 +107,7 @@ impl SymbolTable {
             }
         }
 
-        self.globals.insert(name.to_string(), info);
+        self.globals.insert(key, info);
         self.enter_scope(name);
         Ok(())
     }
@@ -122,14 +128,15 @@ impl SymbolTable {
             local_index: Some(idx),
         };
 
-        let key = (name.to_string(), self.current_scope);
+        let key = (ci(name), self.current_scope);
         self.locals.entry(key).or_default().push(info);
         Ok(())
     }
 
     /// Define a constant (immutable unless previously declared with .var)
     pub fn define_constant(&mut self, name: &str, value: i64, file: &str, line: usize) -> AsmResult<()> {
-        if let Some(existing) = self.globals.get(name) {
+        let key = ci(name);
+        if let Some(existing) = self.globals.get(&key) {
             if !existing.is_mutable && existing.value.is_some() {
                 // Allow same-value redefinition (pass 2)
                 if existing.value != Some(value) {
@@ -148,7 +155,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
         };
-        self.globals.insert(name.to_string(), info);
+        self.globals.insert(key, info);
         Ok(())
     }
 
@@ -166,7 +173,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: Some(idx),
         };
-        let key = (name.to_string(), self.current_scope);
+        let key = (ci(name), self.current_scope);
         self.locals.entry(key).or_default().push(info);
         Ok(())
     }
@@ -183,13 +190,13 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
         };
-        self.globals.insert(name.to_string(), info);
+        self.globals.insert(ci(name), info);
         Ok(())
     }
 
     /// Update a mutable variable or constant defined with .var
     pub fn update_variable(&mut self, name: &str, value: i64) -> AsmResult<()> {
-        if let Some(sym) = self.globals.get_mut(name) {
+        if let Some(sym) = self.globals.get_mut(&ci(name)) {
             if sym.is_mutable {
                 sym.value = Some(value);
                 return Ok(());
@@ -200,7 +207,8 @@ impl SymbolTable {
 
     /// Set a constant with deferred expression (for first pass forward refs)
     pub fn define_constant_deferred(&mut self, name: &str, expr: Expr, file: &str, line: usize) -> AsmResult<()> {
-        let is_update = if let Some(existing) = self.globals.get(name) {
+        let key = ci(name);
+        let is_update = if let Some(existing) = self.globals.get(&key) {
             existing.is_mutable
         } else {
             false
@@ -215,25 +223,26 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
         };
-        self.globals.insert(name.to_string(), info);
+        self.globals.insert(key, info);
         Ok(())
     }
 
     /// Resolve a global symbol value
     pub fn resolve(&self, name: &str) -> Option<i64> {
+        let upper = ci(name);
         // Check macro-local scope first
         for scope_prefix in self.macro_scope_stack.iter().rev() {
-            let macro_key = format!("{}.{}", scope_prefix, name);
+            let macro_key = format!("{}.{}", scope_prefix, upper);
             if let Some(info) = self.macro_locals.get(&macro_key) {
                 return info.value;
             }
         }
-        self.globals.get(name).and_then(|s| s.value)
+        self.globals.get(&upper).and_then(|s| s.value)
     }
 
     /// Resolve a local symbol in the current scope
     pub fn resolve_local(&self, name: &str) -> Option<i64> {
-        let key = (name.to_string(), self.current_scope);
+        let key = (ci(name), self.current_scope);
         if let Some(entries) = self.locals.get(&key) {
             // Return the last defined value in this scope
             for entry in entries.iter().rev() {
@@ -256,22 +265,23 @@ impl SymbolTable {
 
     /// Define a macro
     pub fn define_macro(&mut self, def: MacroDef) -> AsmResult<()> {
-        if self.macros.contains_key(&def.name) {
+        let key = ci(&def.name);
+        if self.macros.contains_key(&key) {
             return Err(AsmError::new(format!("Macro '{}' already defined", def.name)));
         }
-        self.macros.insert(def.name.clone(), def);
+        self.macros.insert(key, def);
         Ok(())
     }
 
     /// Look up a macro definition
     pub fn get_macro(&self, name: &str) -> Option<&MacroDef> {
-        self.macros.get(name)
+        self.macros.get(&ci(name))
     }
 
     /// Begin a macro expansion scope
     pub fn begin_macro_expansion(&mut self, macro_name: &str) -> String {
         self.macro_call_count += 1;
-        let prefix = format!("{}_{}", macro_name, self.macro_call_count);
+        let prefix = format!("{}_{}", ci(macro_name), self.macro_call_count);
         self.macro_scope_stack.push(prefix.clone());
         prefix
     }
@@ -283,7 +293,7 @@ impl SymbolTable {
 
     /// Define a symbol in the current macro scope
     pub fn define_macro_local(&mut self, scope_prefix: &str, name: &str, value: i64, file: &str, line: usize) {
-        let key = format!("{}.{}", scope_prefix, name);
+        let key = format!("{}.{}", scope_prefix, ci(name));
         self.macro_locals.insert(key, SymbolInfo {
             value: Some(value),
             expr: None,
@@ -313,11 +323,11 @@ impl SymbolTable {
 
     /// Check if a symbol exists (either global or local)
     pub fn exists(&self, name: &str) -> bool {
-        self.globals.contains_key(name)
+        self.globals.contains_key(&ci(name))
     }
 
     pub fn is_mutable(&self, name: &str) -> bool {
-        self.globals.get(name).map(|info| info.is_mutable).unwrap_or(false)
+        self.globals.get(&ci(name)).map(|info| info.is_mutable).unwrap_or(false)
     }
 
     /// Reset for pass 2 (keep definitions, reset scope tracking)
@@ -338,4 +348,3 @@ impl SymbolTable {
         self.macro_call_count = 0;
     }
 }
-

@@ -4,9 +4,15 @@ By default the assembler targets the Intel 8080 instruction set. Use `--cpu z80`
 
 ## Case Sensitivity
 
-Instruction mnemonics, register names, directives, and condition codes are all **case-insensitive**. `MOV`, `mov`, and `Mov` are equivalent; `HL`, `hl`, and `Hl` all refer to the same register pair; `.ORG`, `.org`, and `.Org` are the same directive.
+The assembler is **case-insensitive** for all identifiers:
 
-Symbol names (labels, constants, macros) **are** case-sensitive: `Start` and `start` are different symbols.
+- **Mnemonics**: `MOV`, `mov`, and `Mov` are equivalent.
+- **Registers**: `HL`, `hl`, and `Hl` all refer to the same register pair.
+- **Directives**: `.ORG`, `.org`, and `.Org` are the same directive.
+- **Symbols**: `Start` and `start` refer to the same label; `MAX_SIZE` and `max_size` are the same constant.
+- **Macros**: `SetPalette` and `SETPALETTE` invoke the same macro.
+
+Original case is preserved in listing output and debug symbols (`.symbols.json`).
 
 ## Comments
 
