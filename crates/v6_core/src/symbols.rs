@@ -24,6 +24,10 @@ pub struct SymbolInfo {
     pub section: Option<usize>,
     /// Original (non-normalized) name as written in source
     pub original_name: String,
+    /// True when the symbol was defined by a label (`foo:`) rather than a
+    /// constant assignment (`foo = expr`). Used by the ELF serialiser to
+    /// decide whether to set `STT_FUNC` on executable-section symbols.
+    pub is_code_label: bool,
 }
 
 /// Information about a macro definition
@@ -109,6 +113,7 @@ impl SymbolTable {
             local_index: None,
             section,
             original_name: name.to_string(),
+            is_code_label: true,
         };
 
         let key = ci(name);
@@ -147,6 +152,7 @@ impl SymbolTable {
             local_index: Some(idx),
             section,
             original_name: name.to_string(),
+            is_code_label: true,
         };
 
         let key = (ci(name), self.current_scope);
@@ -177,6 +183,7 @@ impl SymbolTable {
             local_index: None,
             section: None,
             original_name: name.to_string(),
+            is_code_label: false,
         };
         self.globals.insert(key, info);
         Ok(())
@@ -197,6 +204,7 @@ impl SymbolTable {
             local_index: Some(idx),
             section: None,
             original_name: name.to_string(),
+            is_code_label: false,
         };
         let key = (ci(name), self.current_scope);
         self.locals.entry(key).or_default().push(info);
@@ -216,6 +224,7 @@ impl SymbolTable {
             local_index: None,
             section: None,
             original_name: name.to_string(),
+            is_code_label: false,
         };
         self.globals.insert(ci(name), info);
         Ok(())
@@ -230,6 +239,38 @@ impl SymbolTable {
             }
         }
         Err(AsmError::new(format!("Cannot reassign immutable symbol '{}'", name)))
+    }
+
+    /// Define a constant that is section-relative (obj mode alias like `foo = bar + 1`).
+    /// Like `define_constant` but also records the section affiliation so the symbol
+    /// appears as a section-relative (relocatable) entry in the ELF symtab instead of ABS.
+    pub fn define_constant_in_section(&mut self, name: &str, value: i64, section: usize, file: &str, line: usize) -> AsmResult<()> {
+        let key = ci(name);
+        if let Some(existing) = self.globals.get_mut(&key) {
+            if !existing.is_mutable && existing.value.is_some() {
+                if existing.value != Some(value) {
+                    return Err(AsmError::new(format!("Constant '{}' already defined with different value", name)));
+                }
+                // Same value — upgrade section affiliation recorded from pass 1.
+                existing.section = Some(section);
+                return Ok(());
+            }
+        }
+        let info = SymbolInfo {
+            value: Some(value),
+            expr: None,
+            file: file.to_string(),
+            line,
+            is_mutable: false,
+            is_local: false,
+            scope_id: self.current_scope,
+            local_index: None,
+            section: Some(section),
+            original_name: name.to_string(),
+            is_code_label: false,
+        };
+        self.globals.insert(key, info);
+        Ok(())
     }
 
     /// Set a constant with deferred expression (for first pass forward refs)
@@ -251,6 +292,7 @@ impl SymbolTable {
             local_index: None,
             section: None,
             original_name: name.to_string(),
+            is_code_label: false,
         };
         self.globals.insert(key, info);
         Ok(())
@@ -331,6 +373,19 @@ impl SymbolTable {
         None
     }
 
+    /// Look up full symbol info for a local symbol in a specific scope.
+    pub fn get_local_info_in_scope(&self, name: &str, scope_id: usize) -> Option<&SymbolInfo> {
+        let key = (ci(name), scope_id);
+        if let Some(entries) = self.locals.get(&key) {
+            for entry in entries.iter().rev() {
+                if entry.value.is_some() {
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+
     /// Define a macro
     pub fn define_macro(&mut self, def: MacroDef) -> AsmResult<()> {
         let key = ci(&def.name);
@@ -373,6 +428,7 @@ impl SymbolTable {
             local_index: None,
             section: None,
             original_name: name.to_string(),
+            is_code_label: false,
         });
     }
 

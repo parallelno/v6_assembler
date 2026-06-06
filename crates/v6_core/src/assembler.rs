@@ -691,25 +691,71 @@ impl Assembler {
                     self.define_local_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::ConstDef { name, is_local, expr } => {
-                    // Resolve locals using pre-label scope for the same reason as in pass1.
-                    let val = {
-                        let symbols = &self.symbols;
-                        let pc = self.pc;
-                        eval_expr(expr, &|sym| {
-                            symbols.resolve(sym)
-                                .or_else(|| symbols.resolve_local(sym))
-                                .or_else(|| symbols.resolve_local_in_scope(sym, pre_label_scope))
-                        }, pc)?
-                    };
-                    if *is_local {
-                        self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
+                    if self.output_format == OutputFormat::Obj && !*is_local {
+                        // In object mode use the relocatable evaluator so that
+                        // section-relative results (e.g. `foo = bar + 1`) are
+                        // recorded with their section affiliation.  Plain
+                        // constants (ABS) fall through to define_constant.
+                        let active = self.obj.active;
+                        let rv = {
+                            let symbols = &self.symbols;
+                            let pc = self.pc;
+                            eval_expr_reloc(expr, &|sym, is_local_sym| {
+                                let info = if is_local_sym {
+                                    symbols.get_local_info(sym)
+                                        .or_else(|| symbols.get_local_info_in_scope(sym, pre_label_scope))
+                                } else {
+                                    symbols.get_global_info(sym)
+                                };
+                                match info {
+                                    Some(i) => {
+                                        if let Some(sec) = i.section {
+                                            SymValue::Section { index: sec, offset: i.value.unwrap_or(0) }
+                                        } else if let Some(v) = i.value {
+                                            SymValue::Absolute(v)
+                                        } else {
+                                            SymValue::Undefined
+                                        }
+                                    }
+                                    None => SymValue::Undefined,
+                                }
+                            }, pc, active)?
+                        };
+                        let val = rv.addend;
+                        match &rv.target {
+                            Some(crate::object::section::RelocTarget::Section(sec)) => {
+                                self.symbols.define_constant_in_section(name, val, *sec, &line.file, line.line_num)?;
+                            }
+                            _ => {
+                                // Absolute or undefined — fall back to regular constant
+                                if self.symbols.is_mutable(name) {
+                                    self.symbols.update_variable(name, val)?;
+                                } else {
+                                    self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                                }
+                            }
+                        }
                     } else {
-                        if self.symbols.is_mutable(name) {
-                            self.symbols.update_variable(name, val)?;
-                        } else if self.symbols.exists(name) {
-                            self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                        // ROM mode or local constant: plain evaluation.
+                        let val = {
+                            let symbols = &self.symbols;
+                            let pc = self.pc;
+                            eval_expr(expr, &|sym| {
+                                symbols.resolve(sym)
+                                    .or_else(|| symbols.resolve_local(sym))
+                                    .or_else(|| symbols.resolve_local_in_scope(sym, pre_label_scope))
+                            }, pc)?
+                        };
+                        if *is_local {
+                            self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
                         } else {
-                            self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                            if self.symbols.is_mutable(name) {
+                                self.symbols.update_variable(name, val)?;
+                            } else if self.symbols.exists(name) {
+                                self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                            } else {
+                                self.symbols.define_constant(name, val, &line.file, line.line_num)?;
+                            }
                         }
                     }
                 }

@@ -71,7 +71,10 @@ pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8
                         .get(sec)
                         .map(|s| s.flags & SHF_EXECINSTR != 0)
                         .unwrap_or(false);
-                    let kind = if is_exec { SymType::Func } else { SymType::Object };
+                    // Only direct label definitions (`foo:`) in executable
+                    // sections get STT_FUNC.  Constant aliases (`foo = bar+1`)
+                    // always get NOTYPE, even in .text.
+                    let kind = if is_exec && info.is_code_label { SymType::Func } else { SymType::NoType };
                     (kind, SymLocation::Section { index: sec, offset: info.value.unwrap_or(0) as u32 })
                 } else if let Some(v) = info.value {
                     (SymType::NoType, SymLocation::Absolute(v as u32))
