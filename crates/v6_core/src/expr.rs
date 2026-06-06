@@ -528,4 +528,3 @@ pub fn parse_expression(tokens: &[LocatedToken]) -> AsmResult<(Expr, usize)> {
     let expr = parser.parse_expr()?;
     Ok((expr, parser.pos()))
 }
-
