@@ -44,8 +44,8 @@ struct Cli {
     cpu: String,
 
     /// Output format: rom (default) or obj/elf (relocatable ELF object)
-    #[arg(short = 'f', long = "emit", default_value = "rom")]
-    emit: String,
+    #[arg(short = 'f', long = "format", default_value = "rom")]
+    format: String,
 
     /// ROM size alignment in bytes
     #[arg(short = 'a', long = "rom-align", default_value = "1")]
@@ -248,7 +248,7 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         _ => CpuMode::I8080,
     };
 
-    let output_format = match cli.emit.to_ascii_lowercase().as_str() {
+    let output_format = match cli.format.to_ascii_lowercase().as_str() {
         "rom" => OutputFormat::Rom,
         "obj" | "elf" | "o" => OutputFormat::Obj,
         other => {

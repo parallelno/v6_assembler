@@ -1,7 +1,7 @@
 # Object Output (Relocatable ELF)
 
 By default v6asm produces a fully-located flat `.rom` image. With `-f obj`
-(also `--emit obj`) it instead emits a **relocatable ELF32 object** that can be
+(also `--format obj`) it instead emits a **relocatable ELF32 object** that can be
 linked with `ld.lld` and the V6C linker script, alongside objects produced by
 the C toolchain. ROM mode is unchanged; object mode is fully opt-in.
 

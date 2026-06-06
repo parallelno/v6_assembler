@@ -12,7 +12,7 @@ v6asm --init <name>
 | `<source>` | Assembly source file (`.asm`) to compile |
 | `-i`, `--init <name>` | Scaffold a new `.asm` file with a starter template |
 | `-o`, `--output <path>` | Output path (default: `<source>.rom`, or `<source>.o` in object mode) |
-| `-f`, `--emit <format>` | Output format: `rom` (default) or `obj` (relocatable ELF object) |
+| `-f`, `--format <format>` | Output format: `rom` (default) or `obj` (relocatable ELF object) |
 | `-c`, `--cpu <cpu>` | Target CPU: `i8080` (default) or `z80` |
 | `-a`, `--rom-align <n>` | ROM size alignment in bytes (default: `1`; ignored in object mode) |
 | `-q`, `--quiet` | Suppress `.print` output |
