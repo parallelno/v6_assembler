@@ -1288,11 +1288,18 @@ impl Assembler {
                 let still_unresolved: Vec<_> = self.symbols.all_globals()
                     .iter()
                     .filter(|(_, info)| info.value.is_none())
-                    .map(|(name, _)| name.clone())
+                    .map(|(name, info)| {
+                        if info.file.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{} ({}:{})", name, info.file, info.line)
+                        }
+                    })
                     .collect();
                 if !still_unresolved.is_empty() {
                     return Err(AsmError::new(format!(
-                        "Unresolved symbols: {}", still_unresolved.join(", ")
+                        "Unresolved symbols:\n{}",
+                        still_unresolved.iter().map(|s| format!("  {}", s)).collect::<Vec<_>>().join("\n")
                     )));
                 }
                 break;
