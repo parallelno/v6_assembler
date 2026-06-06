@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use crate::diagnostics::{AsmError, AsmResult};
 use crate::symbols::{MacroDef, MacroParam, SymbolTable};
@@ -40,7 +41,10 @@ pub fn preprocess(
 
     // Step 2: Load and inline includes, collect macros
     let raw_lines = content_to_lines(&content, &file_name);
-    let mut expanded = expand_includes(raw_lines, main_file, project_dir, include_dirs, read_file, 0)?;
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    // The main file itself is not subject to .pragma once deduplication —
+    // only included files are. So we don't insert main_file into `seen` here.
+    let mut expanded = expand_includes(raw_lines, main_file, project_dir, include_dirs, read_file, 0, &mut seen)?;
 
     // Step 3: Collect macro definitions
     collect_macros(&mut expanded, symbols)?;
@@ -198,6 +202,19 @@ pub fn strip_multiline_comments(content: &str) -> String {
     result
 }
 
+/// Return true if the first non-empty, non-comment line of `content` is
+/// `.pragma once` (case-insensitive).
+fn has_pragma_once(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        // Skip single-line comments
+        if trimmed.starts_with(';') || trimmed.starts_with("//") { continue; }
+        return trimmed.eq_ignore_ascii_case(".pragma once");
+    }
+    false
+}
+
 fn expand_includes(
     lines: Vec<SourceLine>,
     current_file: &Path,
@@ -205,6 +222,7 @@ fn expand_includes(
     include_dirs: &[PathBuf],
     read_file: &dyn Fn(&Path) -> AsmResult<String>,
     depth: usize,
+    seen: &mut HashSet<PathBuf>,
 ) -> AsmResult<Vec<SourceLine>> {
     if depth >= MAX_INCLUDE_DEPTH {
         return Err(AsmError::new(format!("Include depth exceeded {} levels", MAX_INCLUDE_DEPTH)));
@@ -216,16 +234,37 @@ fn expand_includes(
     for line in &lines {
         let trimmed = line.text.trim();
 
+        // Skip the `.pragma once` directive itself — it's a preprocessor hint,
+        // not assembly output.
+        if trimmed.eq_ignore_ascii_case(".pragma once") {
+            continue;
+        }
+
         // Check for .include "file"
         if let Some(path_str) = parse_include_directive(trimmed) {
             let include_path = resolve_include_path(&path_str, current_dir, project_dir, include_dirs)
                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+
+            // Canonicalize so that different relative spellings of the same
+            // file compare equal.
+            let canonical = include_path.canonicalize().unwrap_or_else(|_| include_path.clone());
+
             let content = read_file(&include_path)
                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+
+            // If the file declares `.pragma once` and has already been
+            // included, silently skip it.
+            if has_pragma_once(&content) {
+                if seen.contains(&canonical) {
+                    continue;
+                }
+                seen.insert(canonical);
+            }
+
             let content = strip_multiline_comments(&content);
             let file_name = path_relative_to(&include_path, project_dir);
             let inc_lines = content_to_lines(&content, &file_name);
-            let expanded = expand_includes(inc_lines, &include_path, project_dir, include_dirs, read_file, depth + 1)?;
+            let expanded = expand_includes(inc_lines, &include_path, project_dir, include_dirs, read_file, depth + 1, seen)?;
             result.extend(expanded);
         } else {
             result.push(line.clone());

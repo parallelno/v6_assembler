@@ -21,6 +21,26 @@ Include another file inline.
 
 Paths are resolved relative to the including file, the main asm file, any directories passed with `-I` / `--include-dir`, or the current working directory. Includes support recursive expansion up to 16 levels.
 
+## `.pragma once`
+
+Marks the current file so that the preprocessor includes it only once, regardless of how many times it is referenced with `.include`. Subsequent `.include` directives pointing to the same file are silently ignored.
+
+Place it as the first non-comment line of any file that defines macros, constants, or other declarations that must not be emitted twice.
+
+```asm
+.pragma once
+
+; v6_macros.asm — safe to include from multiple files
+.macro RAM_DISK_OFF()
+    mvi a, 0
+    out RAM_DISK_PORT
+.endmacro
+```
+
+Files without `.pragma once` are included every time they appear in an `.include` directive (the traditional textual-paste behaviour).
+
+> **Note:** Deduplication is based on the canonical file path, so two `.include` directives that spell the same path differently (e.g. `./foo.asm` vs `foo.asm`) are correctly treated as the same file.
+
 ## `.filesize`
 
 Defines a constant equal to the byte size of a given file. The path resolves relative to the project directory.
