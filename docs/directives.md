@@ -277,3 +277,57 @@ Emits bytes from comma-separated string or character literals using the current 
 .text "   address:   1", '\n', '\0'
 ; emits: 20 20 20 61 64 64 72 65 73 73 3A 20 20 20 31 0A 00
 ```
+
+## Object-Mode Directives
+
+These directives only take effect when assembling in object mode (`v6asm -f obj`). In ROM mode the section directives are ignored as no-ops where harmless, and binding directives have no effect. See [Object Output](object-output.md) for the full model.
+
+### Section selection
+
+Switch the active output section. Subsequent code, data, and labels are placed in that section. The default section is `.text`.
+
+| Directive | Section | Default flags |
+|-----------|---------|---------------|
+| `.text` (no operand) | `.text` | alloc + execute |
+| `.data` | `.data` | alloc + write |
+| `.rodata` | `.rodata` | alloc (read-only) |
+| `.bss` | `.bss` | alloc + write, no file contents |
+| `.section <name>` | `<name>` | inferred from the name |
+
+```asm
+.text
+start:    call init
+          jmp  start
+
+.data
+counter:  .word 0
+
+.bss
+buffer:   .storage 64       ; reserves space, occupies no file bytes
+```
+
+Note: a bare `.text` switches sections, while `.text "..."` (with operands) is the string-emitting directive described above. `.section` accepts an optional `,"flags",@type` suffix for GNU-assembler compatibility; it is parsed and ignored (flags/type are inferred from the name).
+
+### `.globl` / `.global`
+
+Mark one or more symbols as global (externally visible). Global symbols are exported in the object's symbol table so the linker can resolve references from other objects.
+
+```asm
+.globl interruption, vblank_handler
+```
+
+### `.weak`
+
+Mark one or more symbols as weak. A weak definition can be overridden by a strong (global) definition in another object, and an unresolved weak reference links as zero instead of erroring.
+
+```asm
+.weak default_handler
+```
+
+### `.local`
+
+Mark one or more symbols as local. In object mode, defined labels are local by default — only `.globl`/`.weak` export them — so `.local` is accepted mainly for source compatibility and to make the intent explicit.
+
+```asm
+.local scratch_routine
+```

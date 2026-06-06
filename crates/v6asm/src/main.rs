@@ -3,9 +3,9 @@ use std::process;
 use std::time::Instant;
 
 use clap::{CommandFactory, Parser};
-use v6_core::assembler::Assembler;
+use v6_core::assembler::{Assembler, OutputFormat};
 use v6_core::diagnostics::{AsmError, AsmResult};
-use v6_core::output::{generate_listing, generate_rom, rom_start_address, write_listing, write_rom, RomConfig};
+use v6_core::output::{generate_listing, generate_rom, rom_start_address, write_listing, write_object, write_rom, ObjConfig, RomConfig};
 use v6_core::preprocessor;
 use v6_core::project::CpuMode;
 use v6_core::symbols::SymbolTable;
@@ -42,6 +42,10 @@ struct Cli {
     /// Target CPU: i8080 (default) or z80
     #[arg(short = 'c', long = "cpu", default_value = "i8080")]
     cpu: String,
+
+    /// Output format: rom (default) or obj/elf (relocatable ELF object)
+    #[arg(short = 'f', long = "emit", default_value = "rom")]
+    emit: String,
 
     /// ROM size alignment in bytes
     #[arg(short = 'a', long = "rom-align", default_value = "1")]
@@ -243,12 +247,58 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         "z80" => CpuMode::Z80,
         _ => CpuMode::I8080,
     };
+
+    let output_format = match cli.emit.to_ascii_lowercase().as_str() {
+        "rom" => OutputFormat::Rom,
+        "obj" | "elf" | "o" => OutputFormat::Obj,
+        other => {
+            return Err(AsmError::new(format!(
+                "Unknown output format '{}' (expected 'rom' or 'obj')",
+                other
+            )));
+        }
+    };
+
     let mut asm = Assembler::new(cpu_mode, source_dir.clone());
     asm.quiet = cli.quiet;
+    asm.output_format = output_format;
     asm.symbols = symbols;
     asm.original_sources = original_sources;
 
     asm.assemble(&lines)?;
+
+    if output_format == OutputFormat::Obj {
+        if cli.rom_align > 1 {
+            eprintln!("warning: --rom-align is ignored in object mode");
+        }
+        let obj_path = cli.output.clone().unwrap_or_else(|| {
+            source_path.with_extension("o")
+        });
+        if let Some(parent) = obj_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AsmError::new(format!("Cannot create output directory: {}", e)))?;
+            }
+        }
+        write_object(&asm, &ObjConfig::default(), &obj_path)?;
+        let total: usize = asm.obj.sections.iter().map(|s| s.size as usize).sum();
+        eprintln!(
+            "OBJ: {} sections, {} bytes, written to {}",
+            asm.obj.sections.len(),
+            total,
+            obj_path.display()
+        );
+
+        if cli.lst {
+            let lst_path = obj_path.with_extension("lst");
+            let listing = generate_listing(&asm);
+            write_listing(&listing, &lst_path)?;
+            if cli.verbose {
+                eprintln!("Listing written to {}", lst_path.display());
+            }
+        }
+        return Ok(());
+    }
 
     // Generate ROM
     let rom_config = RomConfig {

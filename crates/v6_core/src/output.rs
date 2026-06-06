@@ -3,6 +3,8 @@ use std::path::Path;
 
 use crate::assembler::{Assembler, ListingLine};
 use crate::diagnostics::{AsmError, AsmResult};
+use crate::object::elf::{self, ObjSymbol, SymBinding, SymLocation, SymType};
+use crate::object::section::{RelocTarget, SHF_EXECINSTR};
 
 // Maximum number of bytes to display in the listing BYTES column
 const LISTING_MAX_BYTES: usize = 8;
@@ -43,6 +45,71 @@ pub fn rom_start_address(asm: &Assembler) -> u16 {
 pub fn write_rom(rom: &[u8], path: &Path) -> AsmResult<()> {
     std::fs::write(path, rom)
         .map_err(|e| AsmError::new(format!("Failed to write ROM file: {}", e)))
+}
+
+// ---- Object (ELF) output ----
+
+/// Configuration for object-file emission.
+#[derive(Debug, Clone, Default)]
+pub struct ObjConfig {}
+
+/// Build the ELF symbol model from the assembler's object state and serialize a
+/// relocatable ELF32 object.
+pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8>> {
+    let sections = &asm.obj.sections;
+    let mut symbols: Vec<ObjSymbol> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
+    let mut push_named = |name: &str, binding: SymBinding| {
+        if seen.iter().any(|s| s.eq_ignore_ascii_case(name)) {
+            return;
+        }
+        let (kind, location) = match asm.symbols.get_global_info(name) {
+            Some(info) => {
+                if let Some(sec) = info.section {
+                    let is_exec = sections
+                        .get(sec)
+                        .map(|s| s.flags & SHF_EXECINSTR != 0)
+                        .unwrap_or(false);
+                    let kind = if is_exec { SymType::Func } else { SymType::Object };
+                    (kind, SymLocation::Section { index: sec, offset: info.value.unwrap_or(0) as u32 })
+                } else if let Some(v) = info.value {
+                    (SymType::NoType, SymLocation::Absolute(v as u32))
+                } else {
+                    (SymType::NoType, SymLocation::Undefined)
+                }
+            }
+            None => (SymType::NoType, SymLocation::Undefined),
+        };
+        seen.push(name.to_string());
+        symbols.push(ObjSymbol { name: name.to_string(), binding, kind, location });
+    };
+
+    // Exported (.globl) and weak symbols first.
+    for name in &asm.obj.globls {
+        push_named(name, SymBinding::Global);
+    }
+    for name in &asm.obj.weaks {
+        push_named(name, SymBinding::Weak);
+    }
+
+    // Undefined externals referenced by relocations.
+    for sec in sections {
+        for r in &sec.relocs {
+            if let RelocTarget::Symbol(name) = &r.target {
+                push_named(name, SymBinding::Global);
+            }
+        }
+    }
+
+    Ok(elf::serialize(sections, &symbols))
+}
+
+/// Write a relocatable ELF object to file.
+pub fn write_object(asm: &Assembler, config: &ObjConfig, path: &Path) -> AsmResult<()> {
+    let bytes = generate_object(asm, config)?;
+    std::fs::write(path, bytes)
+        .map_err(|e| AsmError::new(format!("Failed to write object file: {}", e)))
 }
 
 // ---- Listing file output ----

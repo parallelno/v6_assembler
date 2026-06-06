@@ -2,15 +2,67 @@ use std::path::{Path, PathBuf};
 
 use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
 use crate::encoding::{Encoding, EncodingCase, EncodingType};
-use crate::expr::{eval_expr, Expr};
+use crate::expr::{eval_expr, eval_expr_reloc, ByteOp, Expr, RelocValue, SymValue};
 use crate::instructions::{encode_instruction, ParsedOperand};
 use crate::lexer::tokenize_line;
+use crate::object::section::{Reloc, RelocKind, Section};
 use crate::parser::{self, Directive, ParsedLine, PrintArg, TextItem};
 use crate::preprocessor::{SourceLine, OriginalSource, expand_macro, parse_macro_invocation};
 use crate::project::CpuMode;
 use crate::symbols::SymbolTable;
 
 const MAX_LOOP_ITERATIONS: usize = 100_000;
+
+/// Output backend selected for an assembly run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Fully-located flat ROM image (default).
+    Rom,
+    /// Relocatable ELF32 object (`ET_REL`, `EM_V6C`).
+    Obj,
+}
+
+/// Object-mode state: sections, the active section, and symbol bindings.
+pub struct ObjectState {
+    /// Sections in creation order; index 0 is the default `.text`.
+    pub sections: Vec<Section>,
+    /// Index of the currently active section.
+    pub active: usize,
+    /// Names (original case) marked `.globl`/`.global`.
+    pub globls: Vec<String>,
+    /// Names (original case) marked `.weak`.
+    pub weaks: Vec<String>,
+    /// Names (original case) marked `.local`.
+    pub locals: Vec<String>,
+}
+
+impl ObjectState {
+    fn new() -> Self {
+        Self {
+            sections: vec![Section::new(
+                ".text",
+                Section::default_flags(".text"),
+                Section::default_type(".text"),
+            )],
+            active: 0,
+            globls: Vec::new(),
+            weaks: Vec::new(),
+            locals: Vec::new(),
+        }
+    }
+
+    /// Find an existing section by name or create a new one, returning its index.
+    fn section_index(&mut self, name: &str) -> usize {
+        if let Some(idx) = self.sections.iter().position(|s| s.name == name) {
+            idx
+        } else {
+            let flags = Section::default_flags(name);
+            let sh_type = Section::default_type(name);
+            self.sections.push(Section::new(name, flags, sh_type));
+            self.sections.len() - 1
+        }
+    }
+}
 
 /// Output buffer for assembled code (sparse 64KB address space)
 pub struct OutputBuffer {
@@ -115,6 +167,10 @@ pub struct Assembler {
     pub settings: AssemblerSettings,
     pub errors: Vec<AsmError>,
     pub quiet: bool,
+    /// Selected output backend.
+    pub output_format: OutputFormat,
+    /// Object-mode state (only meaningful when `output_format == Obj`).
+    pub obj: ObjectState,
     project_dir: PathBuf,
 
     // Tracking for .optional blocks
@@ -149,6 +205,8 @@ impl Assembler {
             settings: AssemblerSettings::default(),
             errors: Vec::new(),
             quiet: false,
+            output_format: OutputFormat::Rom,
+            obj: ObjectState::new(),
             project_dir,
             _optional_stack: Vec::new(),
             _optional_blocks: Vec::new(),
@@ -163,6 +221,7 @@ impl Assembler {
     /// Assemble preprocessed source lines (two-pass)
     pub fn assemble(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
         // Pass 1: Collect symbols and sizes
+        self.reset_object_state();
         self.pass1(lines)?;
 
         // Resolve deferred constants
@@ -173,9 +232,19 @@ impl Assembler {
         self.symbols.reset_macro_call_count();
         self.pc = 0;
         self.encoding = Encoding::default();
+        self.reset_object_state();
         self.pass2(lines)?;
 
         Ok(())
+    }
+
+    /// Reset object-mode sections/bindings to their initial state. Section
+    /// creation order is deterministic, so section indices recorded for symbols
+    /// in pass 1 remain valid in pass 2.
+    fn reset_object_state(&mut self) {
+        if self.output_format == OutputFormat::Obj {
+            self.obj = ObjectState::new();
+        }
     }
 
     fn pass1(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
@@ -268,10 +337,10 @@ impl Assembler {
             match item {
                 ParsedLine::Empty => {}
                 ParsedLine::Label(name) => {
-                    self.symbols.define_label(name, self.pc, &line.file, line.line_num)?;
+                    self.define_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::LocalLabel(name) => {
-                    self.symbols.define_local_label(name, self.pc, &line.file, line.line_num)?;
+                    self.define_local_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::ConstDef { name, is_local, expr } => {
                     // Try to evaluate immediately, defer if forward reference
@@ -311,7 +380,7 @@ impl Assembler {
                 }
                 ParsedLine::Instruction { mnemonic, operands, .. } => {
                     let size = self.instruction_size(mnemonic, operands)?;
-                    self.pc = self.pc.wrapping_add(size as u16);
+                    self.advance_pc(size as u16);
                 }
                 ParsedLine::Directive(dir) => {
                     self.process_directive_pass1(dir, &line.file, line.line_num)?;
@@ -324,6 +393,11 @@ impl Assembler {
     fn process_directive_pass1(&mut self, dir: &Directive, file: &str, line_num: usize) -> AsmResult<()> {
         match dir {
             Directive::Org(expr) => {
+                if self.output_format == OutputFormat::Obj {
+                    return Err(AsmError::new(
+                        "absolute .org is not allowed in object mode; the linker chooses addresses",
+                    ));
+                }
                 let val = self.eval_expr(expr)?;
                 self.pc = val as u16;
             }
@@ -332,27 +406,34 @@ impl Assembler {
                 if alignment > 0 {
                     let mask = alignment - 1;
                     if self.pc & mask != 0 {
-                        self.pc = (self.pc | mask) + 1;
+                        let target = (self.pc | mask).wrapping_add(1);
+                        self.advance_pc(target.wrapping_sub(self.pc));
                     }
                 }
             }
             Directive::Storage { length, filler: _ } => {
                 let len = self.eval_expr(length)? as u16;
-                self.pc = self.pc.wrapping_add(len);
+                self.advance_pc(len);
             }
             Directive::Byte(exprs) => {
-                self.pc = self.pc.wrapping_add(exprs.len() as u16);
+                self.advance_pc(exprs.len() as u16);
             }
             Directive::Word(exprs) => {
-                self.pc = self.pc.wrapping_add((exprs.len() * 2) as u16);
+                self.advance_pc((exprs.len() * 2) as u16);
             }
             Directive::Dword(exprs) => {
-                self.pc = self.pc.wrapping_add((exprs.len() * 4) as u16);
+                self.advance_pc((exprs.len() * 4) as u16);
             }
             Directive::Text(items) => {
                 let byte_count = self.text_byte_count(items);
-                self.pc = self.pc.wrapping_add(byte_count as u16);
+                self.advance_pc(byte_count as u16);
             }
+            Directive::Section(name) => {
+                self.switch_section(name);
+            }
+            Directive::Globl(names) => self.apply_binding(names, BindingKind::Global),
+            Directive::Weak(names) => self.apply_binding(names, BindingKind::Weak),
+            Directive::Local(names) => self.apply_binding(names, BindingKind::Local),
             Directive::Encoding { enc_type, case } => {
                 if let Some(et) = EncodingType::from_str(enc_type) {
                     self.encoding.encoding_type = et;
@@ -382,7 +463,7 @@ impl Assembler {
                     .len() as usize;
                 let off = offset.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(0);
                 let len = length.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(file_len - off);
-                self.pc = self.pc.wrapping_add(len as u16);
+                self.advance_pc(len as u16);
             }
             Directive::FileSize { name, path } => {
                 let resolved = self.resolve_file_path(path)?;
@@ -587,10 +668,10 @@ impl Assembler {
             match item {
                 ParsedLine::Empty => {}
                 ParsedLine::Label(name) => {
-                    self.symbols.define_label(name, self.pc, &line.file, line.line_num)?;
+                    self.define_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::LocalLabel(name) => {
-                    self.symbols.define_local_label(name, self.pc, &line.file, line.line_num)?;
+                    self.define_local_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::ConstDef { name, is_local, expr } => {
                     let val = self.eval_expr(expr)?;
@@ -750,6 +831,11 @@ impl Assembler {
     fn process_directive_pass2(&mut self, dir: &Directive, file: &str, line_num: usize) -> AsmResult<()> {
         match dir {
             Directive::Org(expr) => {
+                if self.output_format == OutputFormat::Obj {
+                    return Err(AsmError::new(
+                        "absolute .org is not allowed in object mode; the linker chooses addresses",
+                    ));
+                }
                 let val = self.eval_expr(expr)?;
                 self.pc = val as u16;
             }
@@ -757,57 +843,56 @@ impl Assembler {
                 let alignment = self.eval_expr(expr)? as u16;
                 if alignment > 0 {
                     let mask = alignment - 1;
-                    while self.pc & mask != 0 {
-                        self.output.write_byte(self.pc, 0);
-                        self.pc = self.pc.wrapping_add(1);
+                    if self.pc & mask != 0 {
+                        let target = (self.pc | mask).wrapping_add(1);
+                        let pad = target.wrapping_sub(self.pc);
+                        self.out_reserve(pad, Some(0));
                     }
                 }
             }
             Directive::Storage { length, filler } => {
                 let len = self.eval_expr(length)? as u16;
                 let fill = filler.as_ref().map(|e| self.eval_expr(e)).transpose()?.map(|v| v as u8);
-                if let Some(f) = fill {
-                    for _ in 0..len {
-                        self.output.write_byte(self.pc, f);
-                        self.pc = self.pc.wrapping_add(1);
-                    }
-                } else {
-                    self.pc = self.pc.wrapping_add(len);
-                }
+                self.out_reserve(len, fill);
             }
             Directive::Byte(exprs) => {
                 for expr in exprs {
-                    let val = self.eval_expr(expr)? as u8;
-                    self.output.write_byte(self.pc, val);
-                    self.pc = self.pc.wrapping_add(1);
+                    self.emit_byte_expr(expr)?;
                 }
             }
             Directive::Word(exprs) => {
                 for expr in exprs {
-                    let val = self.eval_expr(expr)? as u16;
-                    self.output.write_byte(self.pc, (val & 0xFF) as u8);
-                    self.pc = self.pc.wrapping_add(1);
-                    self.output.write_byte(self.pc, ((val >> 8) & 0xFF) as u8);
-                    self.pc = self.pc.wrapping_add(1);
+                    self.emit_word_expr(expr)?;
                 }
             }
             Directive::Dword(exprs) => {
                 for expr in exprs {
-                    let val = self.eval_expr(expr)? as u32;
-                    for i in 0..4 {
-                        self.output.write_byte(self.pc, ((val >> (i * 8)) & 0xFF) as u8);
-                        self.pc = self.pc.wrapping_add(1);
+                    if self.output_format == OutputFormat::Obj {
+                        let rv = self.eval_reloc(expr)?;
+                        let val = rv.require_constant().map_err(|_| AsmError::new(
+                            "relocatable .dword is not supported (no 32-bit V6C relocation)",
+                        ))? as u32;
+                        for i in 0..4 {
+                            self.out_emit_byte(((val >> (i * 8)) & 0xFF) as u8);
+                        }
+                    } else {
+                        let val = self.eval_expr(expr)? as u32;
+                        for i in 0..4 {
+                            self.out_emit_byte(((val >> (i * 8)) & 0xFF) as u8);
+                        }
                     }
                 }
             }
             Directive::Text(items) => {
                 let bytes = self.encode_text_items(items);
-                let _byte_count = bytes.len();
-                for b in bytes {
-                    self.output.write_byte(self.pc, b);
-                    self.pc = self.pc.wrapping_add(1);
-                }
+                self.out_emit_bytes(&bytes);
             }
+            Directive::Section(name) => {
+                self.switch_section(name);
+            }
+            Directive::Globl(names) => self.apply_binding(names, BindingKind::Global),
+            Directive::Weak(names) => self.apply_binding(names, BindingKind::Weak),
+            Directive::Local(names) => self.apply_binding(names, BindingKind::Local),
             Directive::Encoding { enc_type, case } => {
                 if let Some(et) = EncodingType::from_str(enc_type) {
                     self.encoding.encoding_type = et;
@@ -866,10 +951,8 @@ impl Assembler {
                 let off = offset.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(0);
                 let len = length.as_ref().map(|e| self.eval_expr(e).unwrap_or(0) as usize).unwrap_or(data.len() - off);
                 let slice = &data[off..off + len];
-                for &b in slice {
-                    self.output.write_byte(self.pc, b);
-                    self.pc = self.pc.wrapping_add(1);
-                }
+                let bytes: Vec<u8> = slice.to_vec();
+                self.out_emit_bytes(&bytes);
             }
             Directive::FileSize { name, path } => {
                 let resolved = self.resolve_file_path(path)?;
@@ -894,6 +977,53 @@ impl Assembler {
     fn emit_instruction(&mut self, mnemonic: &str, operands: &[ParsedOperand], expressions: &[Expr]) -> AsmResult<()> {
         let mut encoded = encode_instruction(mnemonic, operands, self.cpu_mode)?;
 
+        if self.output_format == OutputFormat::Obj {
+            let active = self.obj.active;
+            let base = self.obj.sections[active].size; // offset of the opcode
+            let mut expr_idx = 0;
+            if encoded.has_imm8 && expr_idx < expressions.len() {
+                let rv = self.eval_reloc(&expressions[expr_idx])?;
+                if let Some(target) = rv.target.clone() {
+                    let kind = match rv.byte_op {
+                        ByteOp::Lo => RelocKind::Lo8,
+                        ByteOp::Hi => RelocKind::Hi8,
+                        ByteOp::None => RelocKind::Abs8,
+                    };
+                    self.obj.sections[active].add_reloc(Reloc {
+                        offset: base + 1,
+                        kind,
+                        target,
+                        addend: rv.addend,
+                    });
+                } else {
+                    encoded.bytes[1] = rv.require_constant()? as u8;
+                }
+                expr_idx += 1;
+            }
+            if encoded.has_imm16 && expr_idx < expressions.len() {
+                let rv = self.eval_reloc(&expressions[expr_idx])?;
+                if let Some(target) = rv.target.clone() {
+                    let kind = match rv.byte_op {
+                        ByteOp::Lo => RelocKind::Lo8,
+                        ByteOp::Hi => RelocKind::Hi8,
+                        ByteOp::None => RelocKind::Abs16,
+                    };
+                    self.obj.sections[active].add_reloc(Reloc {
+                        offset: base + 1,
+                        kind,
+                        target,
+                        addend: rv.addend,
+                    });
+                } else {
+                    let val = rv.require_constant()? as u16;
+                    encoded.bytes[1] = (val & 0xFF) as u8;
+                    encoded.bytes[2] = ((val >> 8) & 0xFF) as u8;
+                }
+            }
+            self.out_emit_bytes(&encoded.bytes);
+            return Ok(());
+        }
+
         // Fill in immediate values from expressions
         let mut expr_idx = 0;
         if encoded.has_imm8 && expr_idx < expressions.len() {
@@ -917,11 +1047,198 @@ impl Assembler {
         Ok(encoded.size)
     }
 
+    /// Emit one byte of data from an expression (`.byte`/`DB` element),
+    /// generating a relocation in object mode if needed.
+    fn emit_byte_expr(&mut self, expr: &Expr) -> AsmResult<()> {
+        if self.output_format == OutputFormat::Obj {
+            let active = self.obj.active;
+            let off = self.obj.sections[active].size;
+            let rv = self.eval_reloc(expr)?;
+            if let Some(target) = rv.target.clone() {
+                let kind = match rv.byte_op {
+                    ByteOp::Lo => RelocKind::Lo8,
+                    ByteOp::Hi => RelocKind::Hi8,
+                    ByteOp::None => RelocKind::Abs8,
+                };
+                self.obj.sections[active].add_reloc(Reloc { offset: off, kind, target, addend: rv.addend });
+                self.out_emit_byte(0);
+            } else {
+                self.out_emit_byte(rv.require_constant()? as u8);
+            }
+        } else {
+            let val = self.eval_expr(expr)? as u8;
+            self.out_emit_byte(val);
+        }
+        Ok(())
+    }
+
+    /// Emit one 16-bit word of data from an expression (`.word`/`DW` element),
+    /// generating an `R_V6C_16` relocation in object mode if needed.
+    fn emit_word_expr(&mut self, expr: &Expr) -> AsmResult<()> {
+        if self.output_format == OutputFormat::Obj {
+            let active = self.obj.active;
+            let off = self.obj.sections[active].size;
+            let rv = self.eval_reloc(expr)?;
+            if let Some(target) = rv.target.clone() {
+                if rv.byte_op != ByteOp::None {
+                    return Err(AsmError::new(
+                        "byte operation on a 16-bit data word is not supported",
+                    ));
+                }
+                self.obj.sections[active].add_reloc(Reloc {
+                    offset: off,
+                    kind: RelocKind::Abs16,
+                    target,
+                    addend: rv.addend,
+                });
+                self.out_emit_byte(0);
+                self.out_emit_byte(0);
+            } else {
+                let val = rv.require_constant()? as u16;
+                self.out_emit_byte((val & 0xFF) as u8);
+                self.out_emit_byte(((val >> 8) & 0xFF) as u8);
+            }
+        } else {
+            let val = self.eval_expr(expr)? as u16;
+            self.out_emit_byte((val & 0xFF) as u8);
+            self.out_emit_byte(((val >> 8) & 0xFF) as u8);
+        }
+        Ok(())
+    }
+
     fn eval_expr(&self, expr: &Expr) -> AsmResult<i64> {
         let symbols = &self.symbols;
         eval_expr(expr, &|name| {
             symbols.resolve(name).or_else(|| symbols.resolve_local(name))
         }, self.pc)
+    }
+
+    /// Evaluate an expression as a relocatable value (object mode).
+    fn eval_reloc(&self, expr: &Expr) -> AsmResult<RelocValue> {
+        let symbols = &self.symbols;
+        let active = self.obj.active;
+        eval_expr_reloc(expr, &|name, is_local| {
+            let info = if is_local {
+                symbols.get_local_info(name)
+            } else {
+                symbols.get_global_info(name)
+            };
+            match info {
+                Some(i) => {
+                    if let Some(sec) = i.section {
+                        SymValue::Section { index: sec, offset: i.value.unwrap_or(0) }
+                    } else if let Some(v) = i.value {
+                        SymValue::Absolute(v)
+                    } else {
+                        SymValue::Undefined
+                    }
+                }
+                None => SymValue::Undefined,
+            }
+        }, self.pc, active)
+    }
+
+    /// Emit a single byte to the active output (ROM image or active section).
+    fn out_emit_byte(&mut self, b: u8) {
+        match self.output_format {
+            OutputFormat::Rom => self.output.write_byte(self.pc, b),
+            OutputFormat::Obj => self.obj.sections[self.obj.active].push_byte(b),
+        }
+        self.pc = self.pc.wrapping_add(1);
+    }
+
+    /// Emit a slice of bytes to the active output.
+    fn out_emit_bytes(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.out_emit_byte(b);
+        }
+    }
+
+    /// Reserve `len` bytes, optionally filling with a byte. With no filler in
+    /// ROM mode the location counter just advances (leaving a gap); in object
+    /// mode bytes are always materialized (zeros) for PROGBITS sections.
+    fn out_reserve(&mut self, len: u16, fill: Option<u8>) {
+        match self.output_format {
+            OutputFormat::Rom => {
+                if let Some(f) = fill {
+                    for _ in 0..len {
+                        self.output.write_byte(self.pc, f);
+                        self.pc = self.pc.wrapping_add(1);
+                    }
+                } else {
+                    self.pc = self.pc.wrapping_add(len);
+                }
+            }
+            OutputFormat::Obj => {
+                let active = self.obj.active;
+                if self.obj.sections[active].is_nobits() {
+                    self.obj.sections[active].size += len as u32;
+                } else {
+                    let f = fill.unwrap_or(0);
+                    for _ in 0..len {
+                        self.obj.sections[active].push_byte(f);
+                    }
+                }
+                self.pc = self.pc.wrapping_add(len);
+            }
+        }
+    }
+
+    /// Define a global label at the current location, recording the active
+    /// section in object mode.
+    fn define_label_here(&mut self, name: &str, file: &str, line: usize) -> AsmResult<()> {
+        match self.output_format {
+            OutputFormat::Rom => self.symbols.define_label(name, self.pc, file, line),
+            OutputFormat::Obj => {
+                self.symbols.define_label_in(name, self.pc, Some(self.obj.active), file, line)
+            }
+        }
+    }
+
+    /// Define a local label at the current location.
+    fn define_local_label_here(&mut self, name: &str, file: &str, line: usize) -> AsmResult<()> {
+        match self.output_format {
+            OutputFormat::Rom => self.symbols.define_local_label(name, self.pc, file, line),
+            OutputFormat::Obj => {
+                self.symbols.define_local_label_in(name, self.pc, Some(self.obj.active), file, line)
+            }
+        }
+    }
+
+    /// Switch to (or create) a section, syncing the location counter.
+    fn switch_section(&mut self, name: &str) {
+        if self.output_format != OutputFormat::Obj {
+            return;
+        }
+        let idx = self.obj.section_index(name);
+        self.obj.active = idx;
+        self.pc = self.obj.sections[idx].size as u16;
+    }
+
+    /// Advance the location counter (pass 1 size tracking), keeping the active
+    /// section size in sync in object mode.
+    fn advance_pc(&mut self, n: u16) {
+        self.pc = self.pc.wrapping_add(n);
+        if self.output_format == OutputFormat::Obj {
+            self.obj.sections[self.obj.active].size += n as u32;
+        }
+    }
+
+    /// Apply `.globl`/`.weak`/`.local` bindings, recording original-case names.
+    fn apply_binding(&mut self, names: &[String], kind: BindingKind) {
+        if self.output_format != OutputFormat::Obj {
+            return;
+        }
+        let list = match kind {
+            BindingKind::Global => &mut self.obj.globls,
+            BindingKind::Weak => &mut self.obj.weaks,
+            BindingKind::Local => &mut self.obj.locals,
+        };
+        for n in names {
+            if !list.iter().any(|e| e.eq_ignore_ascii_case(n)) {
+                list.push(n.clone());
+            }
+        }
     }
 
     fn resolve_deferred_constants(&mut self) -> AsmResult<()> {
@@ -1006,6 +1323,13 @@ enum BlockKind {
     If,
     Loop,
     Optional,
+}
+
+#[derive(Clone, Copy)]
+enum BindingKind {
+    Global,
+    Weak,
+    Local,
 }
 
 impl BlockKind {

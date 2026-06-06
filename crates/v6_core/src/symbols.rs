@@ -19,6 +19,9 @@ pub struct SymbolInfo {
     pub scope_id: usize,
     /// Sequential index for local label disambiguation in debug output
     pub local_index: Option<usize>,
+    /// In object mode, the section index this label is defined in (its `value`
+    /// is then a section-relative offset). `None` for absolute constants.
+    pub section: Option<usize>,
 }
 
 /// Information about a macro definition
@@ -86,6 +89,13 @@ impl SymbolTable {
 
     /// Define a global label at an address
     pub fn define_label(&mut self, name: &str, addr: u16, file: &str, line: usize) -> AsmResult<()> {
+        self.define_label_in(name, addr, None, file, line)
+    }
+
+    /// Define a global label, optionally recording the section it lives in
+    /// (object mode). When `section` is `Some`, `addr` is a section-relative
+    /// offset.
+    pub fn define_label_in(&mut self, name: &str, addr: u16, section: Option<usize>, file: &str, line: usize) -> AsmResult<()> {
         let info = SymbolInfo {
             value: Some(addr as i64),
             expr: None,
@@ -95,6 +105,7 @@ impl SymbolTable {
             is_local: false,
             scope_id: self.current_scope,
             local_index: None,
+            section,
         };
 
         let key = ci(name);
@@ -114,6 +125,11 @@ impl SymbolTable {
 
     /// Define a local label at an address
     pub fn define_local_label(&mut self, name: &str, addr: u16, file: &str, line: usize) -> AsmResult<()> {
+        self.define_local_label_in(name, addr, None, file, line)
+    }
+
+    /// Define a local label, optionally recording the section it lives in.
+    pub fn define_local_label_in(&mut self, name: &str, addr: u16, section: Option<usize>, file: &str, line: usize) -> AsmResult<()> {
         let idx = self.local_label_counter;
         self.local_label_counter += 1;
 
@@ -126,6 +142,7 @@ impl SymbolTable {
             is_local: true,
             scope_id: self.current_scope,
             local_index: Some(idx),
+            section,
         };
 
         let key = (ci(name), self.current_scope);
@@ -154,6 +171,7 @@ impl SymbolTable {
             is_local: false,
             scope_id: self.current_scope,
             local_index: None,
+            section: None,
         };
         self.globals.insert(key, info);
         Ok(())
@@ -172,6 +190,7 @@ impl SymbolTable {
             is_local: true,
             scope_id: self.current_scope,
             local_index: Some(idx),
+            section: None,
         };
         let key = (ci(name), self.current_scope);
         self.locals.entry(key).or_default().push(info);
@@ -189,6 +208,7 @@ impl SymbolTable {
             is_local: false,
             scope_id: self.current_scope,
             local_index: None,
+            section: None,
         };
         self.globals.insert(ci(name), info);
         Ok(())
@@ -222,6 +242,7 @@ impl SymbolTable {
             is_local: false,
             scope_id: self.current_scope,
             local_index: None,
+            section: None,
         };
         self.globals.insert(key, info);
         Ok(())
@@ -261,6 +282,31 @@ impl SymbolTable {
         } else {
             self.resolve(name)
         }
+    }
+
+    /// Look up full symbol info for a global symbol (including macro-local scope).
+    pub fn get_global_info(&self, name: &str) -> Option<&SymbolInfo> {
+        let upper = ci(name);
+        for scope_prefix in self.macro_scope_stack.iter().rev() {
+            let macro_key = format!("{}.{}", scope_prefix, upper);
+            if let Some(info) = self.macro_locals.get(&macro_key) {
+                return Some(info);
+            }
+        }
+        self.globals.get(&upper)
+    }
+
+    /// Look up full symbol info for a local symbol in the current scope.
+    pub fn get_local_info(&self, name: &str) -> Option<&SymbolInfo> {
+        let key = (ci(name), self.current_scope);
+        if let Some(entries) = self.locals.get(&key) {
+            for entry in entries.iter().rev() {
+                if entry.value.is_some() {
+                    return Some(entry);
+                }
+            }
+        }
+        None
     }
 
     /// Define a macro
@@ -303,6 +349,7 @@ impl SymbolTable {
             is_local: false,
             scope_id: 0,
             local_index: None,
+            section: None,
         });
     }
 

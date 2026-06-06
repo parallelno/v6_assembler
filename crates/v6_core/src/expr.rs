@@ -1,5 +1,6 @@
 use crate::diagnostics::{AsmError, AsmResult};
 use crate::lexer::{LocatedToken, Token};
+use crate::object::section::RelocTarget;
 
 /// Expression AST node
 #[derive(Debug, Clone)]
@@ -125,6 +126,226 @@ pub fn eval_expr(
             })
         }
     }
+}
+
+/// The byte-extraction operation applied to a relocatable value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteOp {
+    /// No byte operation — full-width value.
+    None,
+    /// Low byte (`<expr`).
+    Lo,
+    /// High byte (`>expr`).
+    Hi,
+}
+
+/// Classification of a symbol for relocatable evaluation.
+#[derive(Debug, Clone)]
+pub enum SymValue {
+    /// A pure constant value, foldable into the addend.
+    Absolute(i64),
+    /// A section-relative defined label.
+    Section { index: usize, offset: i64 },
+    /// Referenced but not defined in this translation unit.
+    Undefined,
+}
+
+/// The result of a relocatable expression evaluation: at most one linear
+/// symbol term plus a constant addend, optionally tagged with a byte op.
+#[derive(Debug, Clone)]
+pub struct RelocValue {
+    /// Constant part of the value.
+    pub addend: i64,
+    /// The single relocatable term, if any. `None` means a pure constant.
+    pub target: Option<RelocTarget>,
+    /// Byte operation applied to the (whole) value.
+    pub byte_op: ByteOp,
+}
+
+impl RelocValue {
+    fn constant(v: i64) -> Self {
+        Self { addend: v, target: None, byte_op: ByteOp::None }
+    }
+
+    /// Returns the constant value if this is not relocatable, else an error.
+    pub fn require_constant(&self) -> AsmResult<i64> {
+        if self.target.is_some() {
+            return Err(AsmError::new(
+                "expression must be constant in this context but references a relocatable symbol",
+            ));
+        }
+        Ok(match self.byte_op {
+            ByteOp::None => self.addend,
+            ByteOp::Lo => self.addend & 0xFF,
+            ByteOp::Hi => (self.addend >> 8) & 0xFF,
+        })
+    }
+}
+
+/// Evaluate an expression to a relocatable value. Unlike [`eval_expr`], a
+/// section-relative or undefined symbol does not cause an error — it is carried
+/// symbolically so the caller can emit a relocation.
+///
+/// `resolve` classifies a symbol name (the boolean is true for `@local`
+/// symbols). `cur_section` is the active section index, used for `*`/PC.
+pub fn eval_expr_reloc(
+    expr: &Expr,
+    resolve: &dyn Fn(&str, bool) -> SymValue,
+    pc: u16,
+    cur_section: usize,
+) -> AsmResult<RelocValue> {
+    match expr {
+        Expr::Number(n) => Ok(RelocValue::constant(*n)),
+        Expr::BoolLiteral(b) => Ok(RelocValue::constant(if *b { 1 } else { 0 })),
+        Expr::CurrentPC => Ok(RelocValue {
+            addend: pc as i64,
+            target: Some(RelocTarget::Section(cur_section)),
+            byte_op: ByteOp::None,
+        }),
+        Expr::Symbol(name) => Ok(sym_to_value(resolve(name, false), name)),
+        Expr::LocalSymbol(name) => Ok(sym_to_value(resolve(name, true), name)),
+        Expr::UnaryOp { op, expr } => {
+            let val = eval_expr_reloc(expr, resolve, pc, cur_section)?;
+            match op {
+                UnaryOp::Plus => Ok(val),
+                UnaryOp::LowByte => apply_byte_op(val, ByteOp::Lo),
+                UnaryOp::HighByte => apply_byte_op(val, ByteOp::Hi),
+                UnaryOp::Minus => {
+                    if val.target.is_some() {
+                        return Err(AsmError::new(
+                            "cannot negate a relocatable symbol",
+                        ));
+                    }
+                    Ok(RelocValue::constant(-val.require_constant()?))
+                }
+                UnaryOp::Not => Ok(RelocValue::constant(
+                    if val.require_constant()? == 0 { 1 } else { 0 },
+                )),
+                UnaryOp::BitNot => Ok(RelocValue::constant(!val.require_constant()?)),
+            }
+        }
+        Expr::BinaryOp { op, left, right } => {
+            let l = eval_expr_reloc(left, resolve, pc, cur_section)?;
+            let r = eval_expr_reloc(right, resolve, pc, cur_section)?;
+            match op {
+                BinaryOp::Add => combine_add(l, r, false),
+                BinaryOp::Sub => combine_add(l, r, true),
+                _ => {
+                    // All other operators require constant operands.
+                    let lc = l.require_constant()?;
+                    let rc = r.require_constant()?;
+                    let v = eval_binary_const(*op, lc, rc)?;
+                    Ok(RelocValue::constant(v))
+                }
+            }
+        }
+    }
+}
+
+fn sym_to_value(sv: SymValue, name: &str) -> RelocValue {
+    match sv {
+        SymValue::Absolute(v) => RelocValue::constant(v),
+        SymValue::Section { index, offset } => RelocValue {
+            addend: offset,
+            target: Some(RelocTarget::Section(index)),
+            byte_op: ByteOp::None,
+        },
+        SymValue::Undefined => RelocValue {
+            addend: 0,
+            target: Some(RelocTarget::Symbol(name.to_string())),
+            byte_op: ByteOp::None,
+        },
+    }
+}
+
+fn apply_byte_op(mut val: RelocValue, op: ByteOp) -> AsmResult<RelocValue> {
+    if val.target.is_some() {
+        if val.byte_op != ByteOp::None {
+            return Err(AsmError::new(
+                "nested byte operations on a relocatable symbol are not supported",
+            ));
+        }
+        val.byte_op = op;
+        Ok(val)
+    } else {
+        let v = val.addend;
+        Ok(RelocValue::constant(match op {
+            ByteOp::Lo => v & 0xFF,
+            ByteOp::Hi => (v >> 8) & 0xFF,
+            ByteOp::None => v,
+        }))
+    }
+}
+
+fn combine_add(l: RelocValue, r: RelocValue, subtract: bool) -> AsmResult<RelocValue> {
+    if l.byte_op != ByteOp::None || r.byte_op != ByteOp::None {
+        return Err(AsmError::new(
+            "byte operation cannot be combined with addition/subtraction of relocatable symbols",
+        ));
+    }
+    let rhs_addend = if subtract { -r.addend } else { r.addend };
+    let addend = l.addend.wrapping_add(rhs_addend);
+
+    match (l.target, r.target) {
+        (None, None) => Ok(RelocValue::constant(addend)),
+        (Some(t), None) => Ok(RelocValue { addend, target: Some(t), byte_op: ByteOp::None }),
+        (None, Some(t)) => {
+            if subtract {
+                return Err(AsmError::new("cannot subtract from a relocatable symbol"));
+            }
+            Ok(RelocValue { addend, target: Some(t), byte_op: ByteOp::None })
+        }
+        (Some(lt), Some(rt)) => {
+            // Only a same-section difference folds to a constant.
+            if subtract {
+                if let (RelocTarget::Section(a), RelocTarget::Section(b)) = (&lt, &rt) {
+                    if a == b {
+                        return Ok(RelocValue::constant(addend));
+                    }
+                }
+                Err(AsmError::new(
+                    "relocatable difference across sections or symbols is not supported",
+                ))
+            } else {
+                Err(AsmError::new(
+                    "cannot add two relocatable symbols",
+                ))
+            }
+        }
+    }
+}
+
+fn eval_binary_const(op: BinaryOp, l: i64, r: i64) -> AsmResult<i64> {
+    Ok(match op {
+        BinaryOp::Add => l.wrapping_add(r),
+        BinaryOp::Sub => l.wrapping_sub(r),
+        BinaryOp::Mul => l.wrapping_mul(r),
+        BinaryOp::Div => {
+            if r == 0 {
+                return Err(AsmError::new("Division by zero"));
+            }
+            l / r
+        }
+        BinaryOp::Mod => {
+            if r == 0 {
+                return Err(AsmError::new("Modulo by zero"));
+            }
+            l % r
+        }
+        BinaryOp::Shl => l.wrapping_shl(r as u32),
+        BinaryOp::Shr => l.wrapping_shr(r as u32),
+        BinaryOp::Lt => if l < r { 1 } else { 0 },
+        BinaryOp::Le => if l <= r { 1 } else { 0 },
+        BinaryOp::Gt => if l > r { 1 } else { 0 },
+        BinaryOp::Ge => if l >= r { 1 } else { 0 },
+        BinaryOp::Eq => if l == r { 1 } else { 0 },
+        BinaryOp::Ne => if l != r { 1 } else { 0 },
+        BinaryOp::BitAnd => l & r,
+        BinaryOp::BitXor => l ^ r,
+        BinaryOp::BitOr => l | r,
+        BinaryOp::LogAnd => if l != 0 && r != 0 { 1 } else { 0 },
+        BinaryOp::LogOr => if l != 0 || r != 0 { 1 } else { 0 },
+    })
 }
 
 /// Expression parser using Pratt parsing / recursive descent
@@ -307,4 +528,4 @@ pub fn parse_expression(tokens: &[LocatedToken]) -> AsmResult<(Expr, usize)> {
     let expr = parser.parse_expr()?;
     Ok((expr, parser.pos()))
 }
-
+

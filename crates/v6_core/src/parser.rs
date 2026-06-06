@@ -61,6 +61,14 @@ pub enum Directive {
     Encoding { enc_type: String, case: Option<String> },
     Print(Vec<PrintArg>),
     Error(Vec<PrintArg>),
+    /// Open/append a named section (object mode).
+    Section(String),
+    /// Mark symbols as global (exported): `.globl`/`.global`.
+    Globl(Vec<String>),
+    /// Mark symbols as weak.
+    Weak(Vec<String>),
+    /// Mark symbols as local.
+    Local(Vec<String>),
 }
 
 #[derive(Debug)]
@@ -421,8 +429,19 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             Ok(Directive::Dword(exprs))
         }
         "TEXT" => {
-            let items = parse_text_items(tokens, pos)?;
-            Ok(Directive::Text(items))
+            // `.text "str"` emits string literals; bare `.text` (no operand)
+            // switches to the .text section in object mode.
+            match tokens.get(*pos).map(|t| &t.value) {
+                Some(Token::StringLiteral(_)) | Some(Token::CharLiteral(_)) => {
+                    let items = parse_text_items(tokens, pos)?;
+                    Ok(Directive::Text(items))
+                }
+                None => Ok(Directive::Section(".text".to_string())),
+                _ => {
+                    let items = parse_text_items(tokens, pos)?;
+                    Ok(Directive::Text(items))
+                }
+            }
         }
         "ENCODING" => {
             let enc_type = parse_string_arg(tokens, pos)?;
@@ -458,8 +477,86 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
             let path = parse_string_arg(tokens, pos)?;
             Ok(Directive::FileSize { name: String::new(), path })
         }
+        "SECTION" => {
+            let name = parse_section_name(tokens, pos)?;
+            Ok(Directive::Section(name))
+        }
+        "DATA" => Ok(Directive::Section(".data".to_string())),
+        "RODATA" => Ok(Directive::Section(".rodata".to_string())),
+        "BSS" => Ok(Directive::Section(".bss".to_string())),
+        "GLOBL" | "GLOBAL" => Ok(Directive::Globl(parse_symbol_list(tokens, pos))),
+        "WEAK" => Ok(Directive::Weak(parse_symbol_list(tokens, pos))),
+        "LOCAL" => Ok(Directive::Local(parse_symbol_list(tokens, pos))),
         _ => Err(AsmError::new(format!("Unknown directive: .{}", name))),
     }
+}
+
+/// Parse a section name, accepting either a string literal (`".text.foo"`) or a
+/// dotted identifier reconstructed from `Dot`/`Identifier` tokens.
+fn parse_section_name(tokens: &[LocatedToken], pos: &mut usize) -> AsmResult<String> {
+    if let Some(Token::StringLiteral(s)) = tokens.get(*pos).map(|t| &t.value) {
+        let s = s.clone();
+        *pos += 1;
+        // Skip optional ,"flags",@type — accepted but ignored for now.
+        skip_section_attrs(tokens, pos);
+        return Ok(s);
+    }
+    let mut name = String::new();
+    loop {
+        match tokens.get(*pos).map(|t| &t.value) {
+            Some(Token::Dot) => {
+                name.push('.');
+                *pos += 1;
+            }
+            Some(Token::Identifier(id)) => {
+                name.push_str(id);
+                *pos += 1;
+            }
+            _ => break,
+        }
+    }
+    if name.is_empty() {
+        return Err(AsmError::new("Expected section name after .section"));
+    }
+    skip_section_attrs(tokens, pos);
+    Ok(name)
+}
+
+/// Skip an optional `,"flags"[,@type]` tail on a `.section` directive.
+fn skip_section_attrs(tokens: &[LocatedToken], pos: &mut usize) {
+    while eat_comma(tokens, pos) {
+        // Consume one attribute token group (string, @type, identifier).
+        match tokens.get(*pos).map(|t| &t.value) {
+            Some(Token::StringLiteral(_)) | Some(Token::Identifier(_)) | Some(Token::Number(_)) => {
+                *pos += 1;
+            }
+            Some(Token::At) => {
+                *pos += 1;
+                if matches!(tokens.get(*pos).map(|t| &t.value), Some(Token::Identifier(_))) {
+                    *pos += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+}
+
+/// Parse a comma-separated list of symbol names for `.globl`/`.weak`/`.local`.
+fn parse_symbol_list(tokens: &[LocatedToken], pos: &mut usize) -> Vec<String> {
+    let mut names = Vec::new();
+    loop {
+        match tokens.get(*pos).map(|t| &t.value) {
+            Some(Token::Identifier(name)) => {
+                names.push(name.clone());
+                *pos += 1;
+            }
+            _ => break,
+        }
+        if !eat_comma(tokens, pos) {
+            break;
+        }
+    }
+    names
 }
 
 fn parse_instruction(tokens: &[LocatedToken], pos: &mut usize, cpu_mode: CpuMode) -> AsmResult<ParsedLine> {
