@@ -123,9 +123,53 @@ This is an alias for `.optional` / `.endoptional`. Short forms: `.func` / `.endf
 
 Updates assembler defaults using non-case-sensitive key/value pairs. Values may be string, integer, or boolean. Multiple pairs can be specified in one directive.
 
+| Key | Values | Default | Description |
+|-----|--------|---------|-------------|
+| `optional` | `true` / `false` | `true` | Enable or disable pruning of unreferenced `.optional` blocks. |
+| `force_once` | `true` / `false` | `false` | Include this file and all files it includes at most once (see below). |
+
 ```asm
-.setting optional, false ; disables pruning of .optional blocks
+.setting optional, false          ; disables pruning of .optional blocks
+.setting force_once, true         ; deduplicate this file and its sub-includes
+.setting force_once, true, optional, false  ; multiple pairs in one directive
 ```
+
+### `force_once`
+
+When a file contains `.setting force_once, true`, the preprocessor treats it
+like `.pragma once` — subsequent `.include` directives pointing to the same
+file are silently ignored.  In addition, the setting **propagates** to every
+file that file includes: all direct and transitive sub-includes are also
+deduplicated for the duration of that include tree.
+
+**Priority:** `true` wins over `false` and over the default.  If the same file
+is included from multiple modules and at least one of them (or the file itself)
+sets `force_once = true`, the file is assembled only once — the first
+occurrence is kept and all later ones are skipped.
+
+```asm
+; macros.asm — safe to include from multiple files
+.setting force_once, true
+
+.macro NOP_()
+    nop
+.endmacro
+```
+
+```asm
+; module_a.asm
+.include "macros.asm"   ; assembled — macros.asm registered as force-once
+```
+
+```asm
+; module_b.asm
+.include "macros.asm"   ; skipped — already registered
+```
+
+The difference from `.pragma once` is one of *declaration point*: `.pragma
+once` is declared inside the file itself; `force_once` can also be set by the
+**parent** file (`.setting force_once, true` in the file that does the
+including), which covers the case where you cannot modify the included file.
 
 ## Labels and Constants
 

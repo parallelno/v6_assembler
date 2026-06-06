@@ -145,12 +145,15 @@ pub struct ListingLine {
 #[derive(Debug, Clone)]
 pub struct AssemblerSettings {
     pub optional_enabled: bool,
+    /// Mirrors the preprocessor-level `force_once` setting for test assertions.
+    pub force_once: bool,
 }
 
 impl Default for AssemblerSettings {
     fn default() -> Self {
         Self {
             optional_enabled: true,
+            force_once: false,
         }
     }
 }
@@ -448,6 +451,8 @@ impl Assembler {
                 for (key, val) in pairs {
                     if key.eq_ignore_ascii_case("optional") {
                         self.settings.optional_enabled = !val.eq_ignore_ascii_case("false");
+                    } else if key.eq_ignore_ascii_case("force_once") {
+                        self.settings.force_once |= !val.eq_ignore_ascii_case("false");
                     }
                 }
             }
@@ -918,6 +923,8 @@ impl Assembler {
                 for (key, val) in pairs {
                     if key.eq_ignore_ascii_case("optional") {
                         self.settings.optional_enabled = !val.eq_ignore_ascii_case("false");
+                    } else if key.eq_ignore_ascii_case("force_once") {
+                        self.settings.force_once |= !val.eq_ignore_ascii_case("false");
                     }
                 }
             }

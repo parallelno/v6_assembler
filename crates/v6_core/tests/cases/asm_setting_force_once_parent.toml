@@ -1,0 +1,22 @@
+# parent.asm declares .setting force_once, true and includes child.asm.
+# main.asm includes parent.asm twice.  force_once propagates from parent to
+# child, so both parent and child are each assembled exactly once.
+
+[files]
+"main.asm" = '''
+.org $0100
+.include "parent.asm"
+.include "parent.asm"
+'''
+"parent.asm" = '''
+.setting force_once, true
+    .byte $BB
+.include "child.asm"
+'''
+"child.asm" = '''
+    .byte $CC
+'''
+
+[expect]
+rom = "BB CC"
+force_once = true

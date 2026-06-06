@@ -44,7 +44,9 @@ pub fn preprocess(
     let mut seen: HashSet<PathBuf> = HashSet::new();
     // The main file itself is not subject to .pragma once deduplication —
     // only included files are. So we don't insert main_file into `seen` here.
-    let mut expanded = expand_includes(raw_lines, main_file, project_dir, include_dirs, read_file, 0, &mut seen)?;
+    // If the main file declares .setting force_once, propagate to all its includes.
+    let main_force_once = scan_force_once_setting(&content);
+    let mut expanded = expand_includes(raw_lines, main_file, project_dir, include_dirs, read_file, 0, &mut seen, main_force_once)?;
 
     // Step 3: Collect macro definitions
     collect_macros(&mut expanded, symbols)?;
@@ -215,6 +217,39 @@ fn has_pragma_once(content: &str) -> bool {
     false
 }
 
+/// Return true if `content` contains `.setting force_once` with a non-false
+/// value anywhere in the file.
+fn scan_force_once_setting(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        if trimmed.starts_with(';') || trimmed.starts_with("//") { continue; }
+        if trimmed.len() < 8 || !trimmed[..8].eq_ignore_ascii_case(".setting") { continue; }
+        // Verify word boundary — avoid ".settings" matching ".setting"
+        if let Some(&b) = trimmed.as_bytes().get(8) {
+            if b.is_ascii_alphanumeric() || b == b'_' { continue; }
+        }
+        // Strip inline comment, then skip the ".setting" keyword
+        let stripped = strip_single_line_comment(trimmed);
+        let rest = stripped[8..].trim().to_string();
+        // Walk comma-separated key[, value] pairs
+        let mut parts = rest.split(',').map(|s| s.trim().to_string());
+        loop {
+            let key = match parts.next() {
+                Some(k) if !k.is_empty() => k,
+                _ => break,
+            };
+            if key.eq_ignore_ascii_case("force_once") {
+                let val = parts.next().unwrap_or_else(|| "true".to_string());
+                if !val.eq_ignore_ascii_case("false") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn expand_includes(
     lines: Vec<SourceLine>,
     current_file: &Path,
@@ -223,6 +258,7 @@ fn expand_includes(
     read_file: &dyn Fn(&Path) -> AsmResult<String>,
     depth: usize,
     seen: &mut HashSet<PathBuf>,
+    force_once_scope: bool,
 ) -> AsmResult<Vec<SourceLine>> {
     if depth >= MAX_INCLUDE_DEPTH {
         return Err(AsmError::new(format!("Include depth exceeded {} levels", MAX_INCLUDE_DEPTH)));
@@ -252,19 +288,29 @@ fn expand_includes(
             let content = read_file(&include_path)
                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
 
-            // If the file declares `.pragma once` and has already been
-            // included, silently skip it.
-            if has_pragma_once(&content) {
+            // Determine whether this file should be included at most once.
+            // True wins: force_once inherited from the parent scope, the
+            // file's own .pragma once, or a .setting force_once, true
+            // anywhere inside the file.
+            let file_has_force_once = scan_force_once_setting(&content);
+            let should_deduplicate = force_once_scope
+                || has_pragma_once(&content)
+                || file_has_force_once;
+
+            if should_deduplicate {
                 if seen.contains(&canonical) {
                     continue;
                 }
                 seen.insert(canonical);
             }
 
+            // Propagate force_once to the included file's own sub-includes.
+            let child_force_once_scope = force_once_scope || file_has_force_once;
+
             let content = strip_multiline_comments(&content);
             let file_name = path_relative_to(&include_path, project_dir);
             let inc_lines = content_to_lines(&content, &file_name);
-            let expanded = expand_includes(inc_lines, &include_path, project_dir, include_dirs, read_file, depth + 1, seen)?;
+            let expanded = expand_includes(inc_lines, &include_path, project_dir, include_dirs, read_file, depth + 1, seen, child_force_once_scope)?;
             result.extend(expanded);
         } else {
             result.push(line.clone());

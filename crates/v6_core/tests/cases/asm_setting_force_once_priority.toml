@@ -1,0 +1,27 @@
+# Priority rule: shared.asm declares .setting force_once, true inside itself.
+# a.asm and b.asm both include shared.asm without any setting of their own.
+# Because shared.asm's own force_once = true wins, it is assembled only once
+# even though two separate modules request it.
+
+[files]
+"main.asm" = '''
+.org $0100
+.include "a.asm"
+.include "b.asm"
+'''
+"a.asm" = '''
+    .byte $11
+.include "shared.asm"
+'''
+"b.asm" = '''
+    .byte $22
+.include "shared.asm"
+'''
+"shared.asm" = '''
+.setting force_once, true
+    .byte $DD
+'''
+
+[expect]
+rom = "11 DD 22"
+force_once = true

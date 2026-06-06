@@ -1,0 +1,16 @@
+# Baseline / default: without .setting force_once, the same file included
+# twice produces two copies of its content (textual-paste behaviour).
+
+[files]
+"main.asm" = '''
+.org $0100
+.include "shared.asm"
+.include "shared.asm"
+'''
+"shared.asm" = '''
+    .byte $EE
+'''
+
+[expect]
+rom = "EE EE"
+force_once = false

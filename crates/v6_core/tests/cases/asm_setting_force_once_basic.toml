@@ -1,0 +1,18 @@
+# shared.asm declares .setting force_once, true and is included twice from
+# main.asm.  The second include must be silently skipped so the byte is
+# emitted only once.
+
+[files]
+"main.asm" = '''
+.org $0100
+.include "shared.asm"
+.include "shared.asm"
+'''
+"shared.asm" = '''
+.setting force_once, true
+    .byte $AA
+'''
+
+[expect]
+rom = "AA"
+force_once = true

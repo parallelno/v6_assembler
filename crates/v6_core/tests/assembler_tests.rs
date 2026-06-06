@@ -35,6 +35,7 @@ struct Expected {
     error_contains: Option<String>,
     error_line: Option<usize>,
     optional_enabled: Option<bool>,
+    force_once: Option<bool>,
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -253,6 +254,18 @@ fn check_expectations(
                 details,
                 "  optional_enabled mismatch: expected {}, got {}",
                 expected_opt, assembler.settings.optional_enabled
+            ).unwrap();
+            passed = false;
+        }
+    }
+
+    // force_once setting
+    if let Some(expected_fo) = expect.force_once {
+        if assembler.settings.force_once != expected_fo {
+            writeln!(
+                details,
+                "  force_once mismatch: expected {}, got {}",
+                expected_fo, assembler.settings.force_once
             ).unwrap();
             passed = false;
         }
