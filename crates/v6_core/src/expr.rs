@@ -1,4 +1,4 @@
-use crate::diagnostics::{AsmError, AsmResult};
+use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
 use crate::lexer::{LocatedToken, Token};
 use crate::object::section::RelocTarget;
 
@@ -371,6 +371,24 @@ impl<'a> ExprParser<'a> {
         self.tokens.get(self.pos).map(|t| &t.value)
     }
 
+    /// Location of the current token, or the last token if the parser is at
+    /// the end of input. Returns `None` only when there are no tokens at all.
+    fn cur_loc(&self) -> Option<SourceLocation> {
+        self.tokens
+            .get(self.pos)
+            .or_else(|| self.tokens.last())
+            .map(|t| t.loc.clone())
+    }
+
+    /// Build an error annotated with the current token location.
+    fn error(&self, message: impl Into<String>) -> AsmError {
+        let err = AsmError::new(message);
+        match self.cur_loc() {
+            Some(loc) => err.with_location(loc),
+            None => err,
+        }
+    }
+
     fn advance(&mut self) -> Option<&LocatedToken> {
         if self.pos < self.tokens.len() {
             let t = &self.tokens[self.pos];
@@ -482,7 +500,7 @@ impl<'a> ExprParser<'a> {
                         self.advance();
                         Ok(expr)
                     }
-                    _ => Err(AsmError::new("Expected closing parenthesis")),
+                    _ => Err(self.error("Expected closing parenthesis")),
                 }
             }
             Some(Token::At) => {
@@ -492,7 +510,7 @@ impl<'a> ExprParser<'a> {
                         self.advance();
                         Ok(Expr::LocalSymbol(name))
                     }
-                    _ => Err(AsmError::new("Expected identifier after @")),
+                    _ => Err(self.error("Expected identifier after @")),
                 }
             }
             Some(Token::Identifier(ref name)) => {
@@ -515,9 +533,9 @@ impl<'a> ExprParser<'a> {
             }
             Some(Token::StringLiteral(_)) => {
                 // StringLiteral in an expression context - shouldn't happen normally
-                Err(AsmError::new("String literals not allowed in expressions"))
+                Err(self.error("String literals not allowed in expressions"))
             }
-            _ => Err(AsmError::new("Expected expression")),
+            _ => Err(self.error("Expected expression")),
         }
     }
 }

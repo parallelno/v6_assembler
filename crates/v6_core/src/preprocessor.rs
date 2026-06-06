@@ -52,13 +52,24 @@ pub fn preprocess(
 }
 
 fn path_relative_to(file: &Path, base: &Path) -> String {
-    if let Ok(rel) = file.strip_prefix(base) {
-        rel.to_string_lossy().to_string()
+    // A relative path is already relative to the current working directory, so
+    // keep it intact. This yields a path that is clickable from where the
+    // assembler was invoked and reflects the include search (e.g. the `-I`
+    // directory) used to locate the file.
+    let rel = if file.is_relative() {
+        file.to_string_lossy().to_string()
+    } else if let Ok(stripped) = file.strip_prefix(base) {
+        // Absolute path under the project directory: make it relative.
+        stripped.to_string_lossy().to_string()
     } else {
+        // Absolute path elsewhere: fall back to the bare file name.
         file.file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default()
-    }
+    };
+    // Normalize separators so the path renders consistently (and clickably)
+    // regardless of how each include path fragment was written.
+    rel.replace('\\', "/")
 }
 
 fn content_to_lines(content: &str, file_name: &str) -> Vec<SourceLine> {

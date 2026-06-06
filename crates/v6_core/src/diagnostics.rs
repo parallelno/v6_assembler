@@ -26,10 +26,19 @@ impl fmt::Display for AsmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "error: {}", self.message)?;
         if let Some(loc) = &self.location {
-            write!(f, "   -->   {}:{}", loc.file, loc.line)?;
+            write!(f, "\n  --> {}:{}", loc.file, loc.line)?;
+            if loc.col > 0 {
+                write!(f, ":{}", loc.col)?;
+            }
         }
         if let Some(line) = &self.source_line {
-            write!(f, "\n  {}", line)?;
+            write!(f, "\n   |\n   | {}", line)?;
+            // Draw a caret under the offending column when we know it.
+            if let Some(loc) = &self.location {
+                if loc.col > 0 {
+                    write!(f, "\n   | {}^", " ".repeat(loc.col - 1))?;
+                }
+            }
         }
         Ok(())
     }
