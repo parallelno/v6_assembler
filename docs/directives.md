@@ -19,11 +19,11 @@ Include another file inline.
 .include 'file.asm'
 ```
 
-Paths are resolved relative to the including file, the main asm file, or the workspace directory. Includes support recursive expansion up to 16 levels.
+Paths are resolved relative to the including file, the main asm file, any directories passed with `-I` / `--include-dir`, or the current working directory. Includes support recursive expansion up to 16 levels.
 
 ## `.filesize`
 
-Defines a constant equal to the byte size of a given file. The path resolves like `.include` (current file, main asm, project folder, workspace, then CWD).
+Defines a constant equal to the byte size of a given file. The path resolves relative to the project directory.
 
 ```asm
 ROM_SIZE .filesize "out/prg.rom" ; ROM_SIZE becomes the size of prg.rom
@@ -40,7 +40,7 @@ Include raw bytes from an external file at the current address.
 .incbin "path", offset, length  ; start at offset, read length bytes
 ```
 
-Paths resolve like `.include`. `offset` and `length` are optional expressions (decimal, hex, or binary); omit them to start at 0 and read the entire file.
+Paths resolve relative to the project directory. `offset` and `length` are optional expressions (decimal, hex, or binary); omit them to start at 0 and read the entire file.
 
 ## `.if` / `.endif`
 

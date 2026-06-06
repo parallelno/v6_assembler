@@ -1,0 +1,24 @@
+# Tests multiple include dirs: first match wins (search order)
+
+include_dirs = ["lib_a", "lib_b"]
+
+[files]
+"main.asm" = '''
+.org 0x0000
+.include "shared.asm"
+.include "only_b.asm"
+'''
+"lib_a/shared.asm" = '''
+; This is from lib_a (should win over lib_b)
+    db 0xAA
+'''
+"lib_b/shared.asm" = '''
+; This is from lib_b (should NOT be used)
+    db 0xBB
+'''
+"lib_b/only_b.asm" = '''
+    db 0xCC
+'''
+
+[expect]
+rom = "AA CC"

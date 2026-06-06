@@ -1,0 +1,23 @@
+# Tests -I/--include-dir: file found only via include directory
+
+include_dirs = ["libs"]
+
+[files]
+"main.asm" = '''
+.org 0x0100
+.include "helpers.asm"
+main_end:
+    db 0x99
+'''
+"libs/helpers.asm" = '''
+helper_label:
+    db 0x42
+'''
+
+[expect]
+rom = "42 99"
+min_addr = "0100"
+
+[expect.symbols]
+helper_label = 256
+main_end = 257

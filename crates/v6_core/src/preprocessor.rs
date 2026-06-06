@@ -28,6 +28,7 @@ pub struct SourceLine {
 pub fn preprocess(
     main_file: &Path,
     project_dir: &Path,
+    include_dirs: &[PathBuf],
     symbols: &mut SymbolTable,
     read_file: &dyn Fn(&Path) -> AsmResult<String>,
 ) -> AsmResult<Vec<SourceLine>> {
@@ -39,7 +40,7 @@ pub fn preprocess(
 
     // Step 2: Load and inline includes, collect macros
     let raw_lines = content_to_lines(&content, &file_name);
-    let mut expanded = expand_includes(raw_lines, main_file, project_dir, read_file, 0)?;
+    let mut expanded = expand_includes(raw_lines, main_file, project_dir, include_dirs, read_file, 0)?;
 
     // Step 3: Collect macro definitions
     collect_macros(&mut expanded, symbols)?;
@@ -190,6 +191,7 @@ fn expand_includes(
     lines: Vec<SourceLine>,
     current_file: &Path,
     project_dir: &Path,
+    include_dirs: &[PathBuf],
     read_file: &dyn Fn(&Path) -> AsmResult<String>,
     depth: usize,
 ) -> AsmResult<Vec<SourceLine>> {
@@ -205,14 +207,14 @@ fn expand_includes(
 
         // Check for .include "file"
         if let Some(path_str) = parse_include_directive(trimmed) {
-            let include_path = resolve_include_path(&path_str, current_dir, project_dir)
+            let include_path = resolve_include_path(&path_str, current_dir, project_dir, include_dirs)
                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
             let content = read_file(&include_path)
                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
             let content = strip_multiline_comments(&content);
             let file_name = path_relative_to(&include_path, project_dir);
             let inc_lines = content_to_lines(&content, &file_name);
-            let expanded = expand_includes(inc_lines, &include_path, project_dir, read_file, depth + 1)?;
+            let expanded = expand_includes(inc_lines, &include_path, project_dir, include_dirs, read_file, depth + 1)?;
             result.extend(expanded);
         } else {
             result.push(line.clone());
@@ -274,7 +276,7 @@ fn strip_single_line_comment(line: &str) -> String {
     result
 }
 
-fn resolve_include_path(path_str: &str, current_dir: &Path, project_dir: &Path) -> AsmResult<PathBuf> {
+fn resolve_include_path(path_str: &str, current_dir: &Path, project_dir: &Path, include_dirs: &[PathBuf]) -> AsmResult<PathBuf> {
     // Try relative to current file
     let p = current_dir.join(path_str);
     if p.exists() {
@@ -284,6 +286,13 @@ fn resolve_include_path(path_str: &str, current_dir: &Path, project_dir: &Path) 
     let p = project_dir.join(path_str);
     if p.exists() {
         return Ok(p);
+    }
+    // Try each include directory in order
+    for dir in include_dirs {
+        let p = dir.join(path_str);
+        if p.exists() {
+            return Ok(p);
+        }
     }
     // Try CWD
     let p = PathBuf::from(path_str);
@@ -619,16 +628,18 @@ pub fn parse_macro_args(s: &str) -> Vec<String> {
 pub fn collect_original_sources(
     main_file: &Path,
     project_dir: &Path,
+    include_dirs: &[PathBuf],
     read_file: &dyn Fn(&Path) -> AsmResult<String>,
 ) -> AsmResult<Vec<OriginalSource>> {
     let mut sources = Vec::new();
-    collect_sources_recursive(main_file, project_dir, read_file, &mut sources, 0)?;
+    collect_sources_recursive(main_file, project_dir, include_dirs, read_file, &mut sources, 0)?;
     Ok(sources)
 }
 
 fn collect_sources_recursive(
     file: &Path,
     project_dir: &Path,
+    include_dirs: &[PathBuf],
     read_file: &dyn Fn(&Path) -> AsmResult<String>,
     sources: &mut Vec<OriginalSource>,
     depth: usize,
@@ -652,8 +663,8 @@ fn collect_sources_recursive(
     // Recurse into includes
     for line in &lines {
         if let Some(path_str) = parse_include_directive(line.trim()) {
-            if let Ok(include_path) = resolve_include_path(&path_str, current_dir, project_dir) {
-                collect_sources_recursive(&include_path, project_dir, read_file, sources, depth + 1)?;
+            if let Ok(include_path) = resolve_include_path(&path_str, current_dir, project_dir, include_dirs) {
+                collect_sources_recursive(&include_path, project_dir, include_dirs, read_file, sources, depth + 1)?;
             }
         }
     }

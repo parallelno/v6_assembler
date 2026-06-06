@@ -15,6 +15,7 @@ v6asm --init <name>
 | `-f`, `--format <format>` | Output format: `rom` (default) or `obj` (relocatable ELF object) |
 | `-c`, `--cpu <cpu>` | Target CPU: `i8080` (default) or `z80` |
 | `-a`, `--rom-align <n>` | ROM size alignment in bytes (default: `1`; ignored in object mode) |
+| `-I`, `--include-dir <path>` | Extra directory to search for `.include` files; repeatable |
 | `-q`, `--quiet` | Suppress `.print` output |
 | `-V`, `--verbose` | Extra diagnostics |
 | `-l`, `--lst` | Generate a listing file (`.lst`) alongside the ROM |
@@ -39,6 +40,7 @@ v6asm main.asm                        # compile, output main.rom
 v6asm -i main                         # create main.asm from template
 v6asm main.asm -o out/program.rom     # custom output path
 v6asm main.asm -c z80 -l              # Z80 mode + listing
+v6asm -I libs -I shared main.asm      # search extra include directories
 v6asm main.asm -f obj                 # emit relocatable ELF object main.o
 v6asm -v                              # print version
 ```

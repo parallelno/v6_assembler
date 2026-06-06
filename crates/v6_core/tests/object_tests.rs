@@ -51,7 +51,7 @@ fn assemble_obj(source: &str) -> Result<Assembler, AsmError> {
     asm.quiet = true;
     asm.output_format = OutputFormat::Obj;
 
-    let lines = preprocess(&main_path, &dir.root, &mut asm.symbols, &|path| {
+    let lines = preprocess(&main_path, &dir.root, &[], &mut asm.symbols, &|path| {
         fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
     })?;
     asm.assemble(&lines)?;

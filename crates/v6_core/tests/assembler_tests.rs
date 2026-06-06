@@ -21,6 +21,8 @@ struct TestCase {
     files: HashMap<String, String>,
     #[serde(default)]
     binary_files: HashMap<String, String>,
+    #[serde(default)]
+    include_dirs: Vec<String>,
     expect: Expected,
 }
 
@@ -107,7 +109,8 @@ fn assemble_case(
     let mut assembler = Assembler::new(cpu, project.root.clone());
     assembler.quiet = case.quiet.unwrap_or(true);
 
-    let lines = preprocess(&main_path, &project.root, &mut assembler.symbols, &|path| {
+    let include_dirs: Vec<PathBuf> = case.include_dirs.iter().map(|d| project.root.join(d)).collect();
+    let lines = preprocess(&main_path, &project.root, &include_dirs, &mut assembler.symbols, &|path| {
         fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
     })?;
     assembler.assemble(&lines)?;

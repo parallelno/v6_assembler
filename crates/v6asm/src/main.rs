@@ -63,6 +63,10 @@ struct Cli {
     #[arg(short = 'l', long = "lst")]
     lst: bool,
 
+    /// Additional include search directories
+    #[arg(short = 'I', long = "include-dir")]
+    include_dirs: Vec<PathBuf>,
+
     /// Print version information
     #[arg(short = 'v', long = "version")]
     version: bool,
@@ -237,10 +241,10 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         std::fs::read_to_string(path)
             .map_err(|e| AsmError::new(format!("Cannot read {}: {}", path.display(), e)))
     };
-    let lines = preprocessor::preprocess(source_path, &source_dir, &mut symbols, &read_file_fn)?;
+    let lines = preprocessor::preprocess(source_path, &source_dir, &cli.include_dirs, &mut symbols, &read_file_fn)?;
 
     // Collect original sources for listing
-    let original_sources = preprocessor::collect_original_sources(source_path, &source_dir, &read_file_fn)?;
+    let original_sources = preprocessor::collect_original_sources(source_path, &source_dir, &cli.include_dirs, &read_file_fn)?;
 
     // Assemble
     let cpu_mode = match cli.cpu.as_str() {
