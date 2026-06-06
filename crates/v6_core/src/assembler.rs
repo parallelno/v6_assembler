@@ -751,6 +751,12 @@ impl Assembler {
     fn find_matching_block_end(&self, lines: &[SourceLine], start: usize, kind: BlockKind) -> AsmResult<usize> {
         let mut depth = 0usize;
         for (idx, line) in lines.iter().enumerate().skip(start) {
+            // A macro invocation can never be a block directive. Skip it so we
+            // don't try to parse `FOO()` as an instruction/expression while
+            // scanning for the matching block terminator.
+            if parse_macro_invocation(&line.text, &self.symbols).is_some() {
+                continue;
+            }
             let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
             if tokens.is_empty() {
                 continue;
@@ -811,6 +817,11 @@ impl Assembler {
     fn collect_optional_block_symbols(&self, lines: &[SourceLine]) -> AsmResult<Vec<String>> {
         let mut names = Vec::new();
         for line in lines {
+            // A macro invocation defines no symbols and would fail to parse as
+            // an instruction, so skip it.
+            if parse_macro_invocation(&line.text, &self.symbols).is_some() {
+                continue;
+            }
             let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
             if tokens.is_empty() {
                 continue;
