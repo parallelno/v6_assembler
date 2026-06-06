@@ -335,6 +335,11 @@ impl Assembler {
     }
 
     fn process_parsed_line_pass1(&mut self, line: &SourceLine, parsed: &[ParsedLine]) -> AsmResult<()> {
+        // Capture the scope in effect before any Label on this line changes it.
+        // This lets a ConstDef on the same line as a label resolve @locals that
+        // were defined in the scope that just ended.
+        // e.g.  label: = @local_in_previous_scope
+        let pre_label_scope = self.symbols.current_scope();
 
         for item in parsed {
             match item {
@@ -346,9 +351,14 @@ impl Assembler {
                     self.define_local_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::ConstDef { name, is_local, expr } => {
-                    // Try to evaluate immediately, defer if forward reference
+                    // Try to evaluate immediately, defer if forward reference.
+                    // The resolver checks globals, the current scope, and also
+                    // the pre-label scope so that `lbl: = @local` works when
+                    // @local was defined in the scope that ended at `lbl:`.
                     let resolver = |sym: &str| -> Option<i64> {
                         self.symbols.resolve(sym)
+                            .or_else(|| self.symbols.resolve_local(sym))
+                            .or_else(|| self.symbols.resolve_local_in_scope(sym, pre_label_scope))
                     };
                     match eval_expr(expr, &resolver, self.pc) {
                         Ok(val) => {
@@ -668,6 +678,8 @@ impl Assembler {
     }
 
     fn process_parsed_line_pass2(&mut self, line: &SourceLine, parsed: &[ParsedLine]) -> AsmResult<()> {
+        // Capture scope before any Label on this line changes it (see pass1 comment).
+        let pre_label_scope = self.symbols.current_scope();
 
         for item in parsed {
             match item {
@@ -679,7 +691,16 @@ impl Assembler {
                     self.define_local_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::ConstDef { name, is_local, expr } => {
-                    let val = self.eval_expr(expr)?;
+                    // Resolve locals using pre-label scope for the same reason as in pass1.
+                    let val = {
+                        let symbols = &self.symbols;
+                        let pc = self.pc;
+                        eval_expr(expr, &|sym| {
+                            symbols.resolve(sym)
+                                .or_else(|| symbols.resolve_local(sym))
+                                .or_else(|| symbols.resolve_local_in_scope(sym, pre_label_scope))
+                        }, pc)?
+                    };
                     if *is_local {
                         self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
                     } else {
@@ -1288,11 +1309,11 @@ impl Assembler {
                 let still_unresolved: Vec<_> = self.symbols.all_globals()
                     .iter()
                     .filter(|(_, info)| info.value.is_none())
-                    .map(|(name, info)| {
+                    .map(|(_, info)| {
                         if info.file.is_empty() {
-                            name.clone()
+                            info.original_name.clone()
                         } else {
-                            format!("{} ({}:{})", name, info.file, info.line)
+                            format!("{} ({}:{})", info.original_name, info.file, info.line)
                         }
                     })
                     .collect();

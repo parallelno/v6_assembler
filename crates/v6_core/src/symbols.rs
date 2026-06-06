@@ -22,6 +22,8 @@ pub struct SymbolInfo {
     /// In object mode, the section index this label is defined in (its `value`
     /// is then a section-relative offset). `None` for absolute constants.
     pub section: Option<usize>,
+    /// Original (non-normalized) name as written in source
+    pub original_name: String,
 }
 
 /// Information about a macro definition
@@ -106,6 +108,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
             section,
+            original_name: name.to_string(),
         };
 
         let key = ci(name);
@@ -143,6 +146,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: Some(idx),
             section,
+            original_name: name.to_string(),
         };
 
         let key = (ci(name), self.current_scope);
@@ -172,6 +176,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
             section: None,
+            original_name: name.to_string(),
         };
         self.globals.insert(key, info);
         Ok(())
@@ -191,6 +196,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: Some(idx),
             section: None,
+            original_name: name.to_string(),
         };
         let key = (ci(name), self.current_scope);
         self.locals.entry(key).or_default().push(info);
@@ -209,6 +215,7 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
             section: None,
+            original_name: name.to_string(),
         };
         self.globals.insert(ci(name), info);
         Ok(())
@@ -243,9 +250,24 @@ impl SymbolTable {
             scope_id: self.current_scope,
             local_index: None,
             section: None,
+            original_name: name.to_string(),
         };
         self.globals.insert(key, info);
         Ok(())
+    }
+
+    /// Resolve a local symbol in a specific scope (used when a label change
+    /// has already moved the current scope past where the local was defined).
+    pub fn resolve_local_in_scope(&self, name: &str, scope_id: usize) -> Option<i64> {
+        let key = (ci(name), scope_id);
+        if let Some(entries) = self.locals.get(&key) {
+            for entry in entries.iter().rev() {
+                if let Some(val) = entry.value {
+                    return Some(val);
+                }
+            }
+        }
+        None
     }
 
     /// Resolve a global symbol value
@@ -350,6 +372,7 @@ impl SymbolTable {
             scope_id: 0,
             local_index: None,
             section: None,
+            original_name: name.to_string(),
         });
     }
 
