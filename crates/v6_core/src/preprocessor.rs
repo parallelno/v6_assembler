@@ -540,7 +540,7 @@ pub fn expand_macro(
     macro_def: &MacroDef,
     args: &[String],
     call_index: usize,
-    _call_file: &str,
+    call_file: &str,
     call_line: usize,
 ) -> AsmResult<Vec<SourceLine>> {
     let mut body_text = Vec::new();
@@ -562,7 +562,7 @@ pub fn expand_macro(
             expanded = replace_param(&expanded, &param.name, value);
         }
         body_text.push(SourceLine {
-            file: macro_def.file.clone(),
+            file: call_file.to_string(),
             line_num: call_line,
             text: expanded,
             macro_context: Some(format!("{}_{}", macro_def.name, call_index)),
