@@ -181,6 +181,16 @@ pub fn strip_multiline_comments(content: &str) -> String {
             continue;
         }
 
+        // Single-line comments (`;` or `//`): copy verbatim to end of line so that
+        // apostrophes or `/*` inside comments don't affect parsing state.
+        if chars[i] == ';' || (chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/') {
+            while i < chars.len() && chars[i] != '\n' {
+                result.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+
         // Check for /* ... */
         if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
             i += 2;
@@ -617,6 +627,9 @@ fn is_ident_char(c: char) -> bool {
 
 /// Parse a macro invocation from a line of text. Returns (macro_name, arguments) if found.
 pub fn parse_macro_invocation(line: &str, symbols: &SymbolTable) -> Option<(String, Vec<String>)> {
+    // Strip any inline comment so parentheses inside comments don't get mistaken
+    // for the macro argument list closing paren.
+    let line = strip_single_line_comment(line);
     let trimmed = line.trim();
     // Skip labels at the start
     let text = skip_label(trimmed);
