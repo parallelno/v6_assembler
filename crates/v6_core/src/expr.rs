@@ -169,10 +169,15 @@ impl RelocValue {
 
     /// Returns the constant value if this is not relocatable, else an error.
     pub fn require_constant(&self) -> AsmResult<i64> {
-        if self.target.is_some() {
-            return Err(AsmError::new(
-                "expression must be constant in this context but references a relocatable symbol",
-            ));
+        if let Some(target) = &self.target {
+            let what = match target {
+                RelocTarget::Symbol(name) => format!("symbol '{}'", name),
+                RelocTarget::Section(_) => "a section-relative address (label)".to_string(),
+            };
+            return Err(AsmError::new(format!(
+                "expression must be a constant here, but it references {}, whose address is not known until link time",
+                what
+            )));
         }
         Ok(match self.byte_op {
             ByteOp::None => self.addend,
