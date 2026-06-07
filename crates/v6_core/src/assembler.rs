@@ -351,37 +351,90 @@ impl Assembler {
                     self.define_local_label_here(name, &line.file, line.line_num)?;
                 }
                 ParsedLine::ConstDef { name, is_local, expr } => {
-                    // Try to evaluate immediately, defer if forward reference.
-                    // The resolver checks globals, the current scope, and also
-                    // the pre-label scope so that `lbl: = @local` works when
-                    // @local was defined in the scope that ended at `lbl:`.
-                    let resolver = |sym: &str| -> Option<i64> {
-                        self.symbols.resolve(sym)
-                            .or_else(|| self.symbols.resolve_local(sym))
-                            .or_else(|| self.symbols.resolve_local_in_scope(sym, pre_label_scope))
-                    };
-                    match eval_expr(expr, &resolver, self.pc) {
-                        Ok(val) => {
-                            if *is_local {
-                                self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
-                            } else {
-                                if self.symbols.is_mutable(name) {
+                    if self.output_format == OutputFormat::Obj && !*is_local {
+                        // Object mode: evaluate the alias relocatably already in
+                        // pass 1 so a section-relative RHS (`foo = label + 1`)
+                        // records its section affiliation immediately. Otherwise
+                        // a reference appearing *earlier* in the file than the
+                        // alias definition would be encoded in pass 2 before the
+                        // section is known and get baked as an absolute address
+                        // instead of a relocation.
+                        let active = self.obj.active;
+                        let rv = {
+                            let symbols = &self.symbols;
+                            let pc = self.pc;
+                            eval_expr_reloc(expr, &|sym, is_local_sym| {
+                                let info = if is_local_sym {
+                                    symbols.get_local_info(sym)
+                                        .or_else(|| symbols.get_local_info_in_scope(sym, pre_label_scope))
+                                } else {
+                                    symbols.get_global_info(sym)
+                                };
+                                match info {
+                                    Some(i) => {
+                                        if let Some(sec) = i.section {
+                                            SymValue::Section { index: sec, offset: i.value.unwrap_or(0) }
+                                        } else if let Some(v) = i.value {
+                                            SymValue::Absolute(v)
+                                        } else {
+                                            SymValue::Undefined
+                                        }
+                                    }
+                                    None => SymValue::Undefined,
+                                }
+                            }, pc, active)
+                        };
+                        match rv {
+                            Ok(rv) if self.symbols.is_mutable(name) => {
+                                self.symbols.update_variable(name, rv.addend)?;
+                            }
+                            Ok(rv) => match &rv.target {
+                                Some(crate::object::section::RelocTarget::Section(sec)) => {
+                                    self.symbols.define_constant_in_section(name, rv.addend, *sec, &line.file, line.line_num)?;
+                                }
+                                None => {
+                                    self.symbols.define_constant(name, rv.addend, &line.file, line.line_num)?;
+                                }
+                                Some(crate::object::section::RelocTarget::Symbol(_)) => {
+                                    // RHS references a symbol not yet defined
+                                    // (forward reference / external). Defer and
+                                    // retry after pass 1.
+                                    self.symbols.define_constant_deferred(name, expr.clone(), &line.file, line.line_num)?;
+                                }
+                            },
+                            Err(_) => {
+                                self.symbols.define_constant_deferred(name, expr.clone(), &line.file, line.line_num)?;
+                            }
+                        }
+                    } else {
+                        // ROM mode or local constant: plain evaluation, defer on
+                        // forward reference. The resolver checks globals, the
+                        // current scope, and also the pre-label scope so that
+                        // `lbl: = @local` works when @local was defined in the
+                        // scope that ended at `lbl:`.
+                        let resolver = |sym: &str| -> Option<i64> {
+                            self.symbols.resolve(sym)
+                                .or_else(|| self.symbols.resolve_local(sym))
+                                .or_else(|| self.symbols.resolve_local_in_scope(sym, pre_label_scope))
+                        };
+                        match eval_expr(expr, &resolver, self.pc) {
+                            Ok(val) => {
+                                if *is_local {
+                                    self.symbols.define_local_constant(name, val, &line.file, line.line_num)?;
+                                } else if self.symbols.is_mutable(name) {
                                     self.symbols.update_variable(name, val)?;
-                                } else if self.symbols.exists(name) {
-                                    self.symbols.define_constant(name, val, &line.file, line.line_num)?;
                                 } else {
                                     self.symbols.define_constant(name, val, &line.file, line.line_num)?;
                                 }
                             }
-                        }
-                        Err(_) => {
-                            // Defer evaluation
-                            if !*is_local {
-                                self.symbols.define_constant_deferred(name, expr.clone(), &line.file, line.line_num)?;
+                            Err(_) => {
+                                // Defer evaluation
+                                if !*is_local {
+                                    self.symbols.define_constant_deferred(name, expr.clone(), &line.file, line.line_num)?;
+                                }
                             }
                         }
                     }
-
                     }
                 ParsedLine::VarDef { name, expr } => {
                     let resolver = |sym: &str| -> Option<i64> {
@@ -1341,12 +1394,55 @@ impl Assembler {
             }
 
             for (name, expr, file, line) in unresolved {
-                let resolver = |sym: &str| -> Option<i64> {
-                    self.symbols.resolve(sym)
-                };
-                if let Ok(val) = eval_expr(&expr, &resolver, 0) {
-                    self.symbols.define_constant(&name, val, &file, line)?;
-                    any_resolved = true;
+                if self.output_format == OutputFormat::Obj {
+                    // Object mode: evaluate relocatably so that aliases whose RHS
+                    // is a (now-defined) section-relative label record their
+                    // section affiliation, producing relocations when referenced.
+                    let rv = {
+                        let symbols = &self.symbols;
+                        eval_expr_reloc(&expr, &|sym, is_local_sym| {
+                            let info = if is_local_sym {
+                                symbols.get_local_info(sym)
+                            } else {
+                                symbols.get_global_info(sym)
+                            };
+                            match info {
+                                Some(i) => {
+                                    if let Some(sec) = i.section {
+                                        SymValue::Section { index: sec, offset: i.value.unwrap_or(0) }
+                                    } else if let Some(v) = i.value {
+                                        SymValue::Absolute(v)
+                                    } else {
+                                        SymValue::Undefined
+                                    }
+                                }
+                                None => SymValue::Undefined,
+                            }
+                        }, 0, 0)
+                    };
+                    if let Ok(rv) = rv {
+                        match &rv.target {
+                            None => {
+                                self.symbols.define_constant(&name, rv.addend, &file, line)?;
+                                any_resolved = true;
+                            }
+                            Some(crate::object::section::RelocTarget::Section(sec)) => {
+                                self.symbols.define_constant_in_section(&name, rv.addend, *sec, &file, line)?;
+                                any_resolved = true;
+                            }
+                            Some(crate::object::section::RelocTarget::Symbol(_)) => {
+                                // Still references an undefined symbol; retry.
+                            }
+                        }
+                    }
+                } else {
+                    let resolver = |sym: &str| -> Option<i64> {
+                        self.symbols.resolve(sym)
+                    };
+                    if let Ok(val) = eval_expr(&expr, &resolver, 0) {
+                        self.symbols.define_constant(&name, val, &file, line)?;
+                        any_resolved = true;
+                    }
                 }
             }
 
