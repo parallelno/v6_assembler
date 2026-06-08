@@ -61,7 +61,8 @@ reserves space via `.storage` but stores no bytes in the file.
 In object mode, each `.optional` / `.function` block is emitted into its own
 section by default, so unused blocks are pruned at link time by `ld.lld
 --gc-sections` rather than at assemble time. The section is named after the
-first label defined in the block:
+first label that is referenced from outside the block (the label that keeps the
+block alive):
 
 - a block containing code → `.text.<label>` (alloc + execute);
 - a block containing only data → `.data.<label>` (alloc + write), so the data is

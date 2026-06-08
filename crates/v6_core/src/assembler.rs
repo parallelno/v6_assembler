@@ -1015,17 +1015,19 @@ impl Assembler {
                     Ok(OptionalAction::Skip)
                 }
             }
-            OptionalStrategy::Sections => match self.optional_block_first_label(block)? {
-                Some(label) => {
-                    let prefix = if self.optional_block_is_code(block)? {
-                        ".text."
-                    } else {
-                        ".data."
-                    };
-                    Ok(OptionalAction::IncludeInSection(format!("{prefix}{label}")))
+            OptionalStrategy::Sections => {
+                match self.optional_block_section_label(lines, block_start, block_end)? {
+                    Some(label) => {
+                        let prefix = if self.optional_block_is_code(block)? {
+                            ".text."
+                        } else {
+                            ".data."
+                        };
+                        Ok(OptionalAction::IncludeInSection(format!("{prefix}{label}")))
+                    }
+                    None => Ok(OptionalAction::IncludeHere),
                 }
-                None => Ok(OptionalAction::IncludeHere),
-            },
+            }
         }
     }
 
@@ -1058,10 +1060,19 @@ impl Assembler {
         Ok(false)
     }
 
-    /// The first global label defined in the block, used to name its dedicated
-    /// section in `sections` mode.
-    fn optional_block_first_label(&self, lines: &[SourceLine]) -> AsmResult<Option<String>> {
-        for line in lines {
+    /// The label used to name the block's dedicated section in `sections` mode.
+    /// This is the first label *defined in the block* that is *referenced from
+    /// outside* the block (the label that keeps the block alive). If no defined
+    /// label is referenced externally, falls back to the first defined label.
+    fn optional_block_section_label(
+        &self,
+        lines: &[SourceLine],
+        block_start: usize,
+        block_end: usize,
+    ) -> AsmResult<Option<String>> {
+        // Labels defined in the block, in definition order.
+        let mut defined_labels = Vec::new();
+        for line in &lines[block_start..block_end] {
             if parse_macro_invocation(&line.text, &self.symbols).is_some() {
                 continue;
             }
@@ -1072,11 +1083,36 @@ impl Assembler {
             let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
             for item in parsed {
                 if let ParsedLine::Label(name) = item {
-                    return Ok(Some(name));
+                    defined_labels.push(name);
                 }
             }
         }
-        Ok(None)
+        if defined_labels.is_empty() {
+            return Ok(None);
+        }
+
+        // Identifiers referenced by lines outside the block.
+        let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (idx, line) in lines.iter().enumerate() {
+            if idx >= block_start && idx < block_end {
+                continue;
+            }
+            let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
+            for token in &tokens {
+                if let crate::lexer::Token::Identifier(name) = &token.value {
+                    referenced.insert(name.clone());
+                }
+            }
+        }
+
+        // First defined label referenced externally; fall back to the first
+        // defined label if none are referenced.
+        let chosen = defined_labels
+            .iter()
+            .find(|name| referenced.contains(name.as_str()))
+            .cloned()
+            .unwrap_or_else(|| defined_labels[0].clone());
+        Ok(Some(chosen))
     }
 
     /// Returns true if the block contains any instruction (or macro invocation,

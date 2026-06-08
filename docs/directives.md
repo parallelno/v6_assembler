@@ -122,7 +122,8 @@ useful_routine:
 In object mode each `.optional` block is, by default, emitted into its own ELF
 section so the linker prunes unused blocks at link time (`ld.lld
 --gc-sections`), instead of assemble-time pruning. The section is named after
-the **first label** defined in the block:
+the **first label that is referenced from outside the block** (the label that
+keeps the block alive):
 
 - a block containing code goes into `.text.<label>` (alloc + execute);
 - a block containing **only data** (no instructions) goes into `.data.<label>`

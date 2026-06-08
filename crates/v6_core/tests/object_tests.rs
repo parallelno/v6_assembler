@@ -319,6 +319,26 @@ fn optional_data_block_becomes_data_section() {
 }
 
 #[test]
+fn optional_section_uses_first_referenced_label() {
+    // The block defines `internal` first, but only `entry` is referenced from
+    // outside, so the section is named after `entry`.
+    let asm = assemble_obj(
+        "call entry\n\
+         .opt\n\
+         internal:\n\
+         nop\n\
+         entry:\n\
+         ret\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let names: Vec<&str> = asm.obj.sections.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&".text.entry"), "sections: {names:?}");
+    assert!(!names.contains(&".text.internal"), "sections: {names:?}");
+}
+
+#[test]
 fn nested_optional_blocks_create_separate_sections() {
     let asm = assemble_obj(
         "call outer\n\

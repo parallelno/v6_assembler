@@ -11,7 +11,9 @@ how the LLVM V6C backend emits one `.text.<func>` section per function.
 - Section name = `.data.<first label>` when the block contains **only data**
   (no instructions). `.data.*` is `SHF_ALLOC | SHF_WRITE` — relocatable and
   overridable, suitable for data that another object may replace.
-- `<first label>` = the first **global** label defined inside the block.
+- `<first label>` = the first label defined in the block that is **referenced
+  from outside** the block (the label that keeps the block alive); falls back to
+  the first defined label if none are referenced externally.
 - Activation: `.setting optional, prune|sections` (also `true`/`false`).
   Default in obj mode = `sections`; default in ROM mode = `prune`.
 - A `.optional` block that defines **no** label or constant is now an **error**
@@ -20,7 +22,9 @@ how the LLVM V6C backend emits one `.text.<func>` section per function.
 
 ## Decisions
 
-- "First label" = first global label defined in the block (`ParsedLine::Label`).
+- "First label" = the first label defined in the block that is referenced from
+  outside the block (`ParsedLine::Label`), falling back to the first defined
+  label when none are referenced externally.
 - Data-only block → `.data.<label>` (writable / overridable).
 - Default ON in obj mode, toggle via `.setting optional, prune|sections`.
 - Label-less `.optional` block → assembler error in both ROM and obj mode.
@@ -71,7 +75,7 @@ how the LLVM V6C backend emits one `.text.<func>` section per function.
 2. `IncludeAll` → `IncludeHere`.
 3. `Prune` → reference scan over lines outside the block; referenced →
    `IncludeHere`, else `Skip`.
-4. `Sections` → first global label → `IncludeInSection(".text."|".data." + label)`
+4. `Sections` → first referenced label → `IncludeInSection(".text."|".data." + label)`
    (`.text.` if block contains an instruction or macro invocation, else
    `.data.`); constants-only block with no label → `IncludeHere`.
 
