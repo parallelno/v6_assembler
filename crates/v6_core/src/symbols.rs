@@ -390,7 +390,8 @@ impl SymbolTable {
     pub fn define_macro(&mut self, def: MacroDef) -> AsmResult<()> {
         let key = ci(&def.name);
         if self.macros.contains_key(&key) {
-            return Err(AsmError::new(format!("Macro '{}' already defined", def.name)));
+            return Err(AsmError::new(format!("Macro '{}' already defined", def.name))
+                .ensure_location(&def.file, def.line));
         }
         self.macros.insert(key, def);
         Ok(())
