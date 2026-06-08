@@ -185,6 +185,18 @@ enum OptionalAction {
     IncludeInSection(String),
 }
 
+/// The kind of dedicated section an `.optional` block maps to in `sections`
+/// mode, based on its contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionalBlockClass {
+    /// Contains instructions/macros — `.text.<label>`.
+    Code,
+    /// Emits initialized bytes — `.data.<label>`.
+    Data,
+    /// Only reserves space via `.storage` (no bytes) — `.bss.<label>`.
+    Bss,
+}
+
 /// The main assembler context
 pub struct Assembler {
     pub symbols: SymbolTable,
@@ -1018,10 +1030,10 @@ impl Assembler {
             OptionalStrategy::Sections => {
                 match self.optional_block_section_label(lines, block_start, block_end)? {
                     Some(label) => {
-                        let prefix = if self.optional_block_is_code(block)? {
-                            ".text."
-                        } else {
-                            ".data."
+                        let prefix = match self.optional_block_class(block)? {
+                            OptionalBlockClass::Code => ".text.",
+                            OptionalBlockClass::Data => ".data.",
+                            OptionalBlockClass::Bss => ".bss.",
                         };
                         Ok(OptionalAction::IncludeInSection(format!("{prefix}{label}")))
                     }
@@ -1118,10 +1130,13 @@ impl Assembler {
     /// Returns true if the block contains any instruction (or macro invocation,
     /// which expands to instructions), meaning it belongs in a `.text.*`
     /// section rather than a data `.data.*` section.
-    fn optional_block_is_code(&self, lines: &[SourceLine]) -> AsmResult<bool> {
+    fn optional_block_class(&self, lines: &[SourceLine]) -> AsmResult<OptionalBlockClass> {
+        let mut has_initialized_data = false;
+        let mut has_storage = false;
         for line in lines {
+            // A macro invocation expands to instructions: treat as code.
             if parse_macro_invocation(&line.text, &self.symbols).is_some() {
-                return Ok(true);
+                return Ok(OptionalBlockClass::Code);
             }
             let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
             if tokens.is_empty() {
@@ -1129,12 +1144,35 @@ impl Assembler {
             }
             let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
             for item in parsed {
-                if let ParsedLine::Instruction { .. } = item {
-                    return Ok(true);
+                match item {
+                    ParsedLine::Instruction { .. } => return Ok(OptionalBlockClass::Code),
+                    ParsedLine::Directive(dir) => match dir {
+                        // `.storage` without a filler reserves space but emits
+                        // no bytes — eligible for `.bss`.
+                        Directive::Storage { filler: None, .. } => has_storage = true,
+                        // `.storage` with a filler and all other emitting
+                        // directives produce initialized bytes — `.data`.
+                        Directive::Storage { filler: Some(_), .. }
+                        | Directive::Byte(_)
+                        | Directive::Word(_)
+                        | Directive::Dword(_)
+                        | Directive::Text(_)
+                        | Directive::IncBin { .. }
+                        | Directive::Align(_) => has_initialized_data = true,
+                        _ => {}
+                    },
+                    _ => {}
                 }
             }
         }
-        Ok(false)
+        if has_initialized_data {
+            Ok(OptionalBlockClass::Data)
+        } else if has_storage {
+            Ok(OptionalBlockClass::Bss)
+        } else {
+            // Only labels/constants: keep with initialized data semantics.
+            Ok(OptionalBlockClass::Data)
+        }
     }
 
     /// Switch to a dedicated section for an `.optional` block, returning the

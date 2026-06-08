@@ -339,6 +339,58 @@ fn optional_section_uses_first_referenced_label() {
 }
 
 #[test]
+fn optional_storage_only_block_becomes_bss_section() {
+    use v6_core::object::section::{SHF_ALLOC, SHF_WRITE, SHT_NOBITS};
+
+    // A block that only reserves space with `.storage` (no filler) carries no
+    // file bytes and belongs in a `.bss.<label>` (SHT_NOBITS) section.
+    let asm = assemble_obj(
+        "lxi h, buffer\n\
+         .opt\n\
+         buffer:\n\
+         .storage 8\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".bss.buffer")
+        .expect("expected a .bss.buffer section");
+    assert_eq!(sec.flags, SHF_ALLOC | SHF_WRITE);
+    assert_eq!(sec.sh_type, SHT_NOBITS);
+    assert_eq!(sec.size, 8);
+    assert!(sec.bytes.is_empty(), "bss section must store no bytes");
+}
+
+#[test]
+fn optional_storage_with_filler_stays_in_data_section() {
+    use v6_core::object::section::{SHF_ALLOC, SHF_WRITE, SHT_PROGBITS};
+
+    // `.storage N, filler` emits initialized bytes, so it stays in `.data.*`.
+    let asm = assemble_obj(
+        "lxi h, table\n\
+         .opt\n\
+         table:\n\
+         .storage 3, 0x7E\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".data.table")
+        .expect("expected a .data.table section");
+    assert_eq!(sec.flags, SHF_ALLOC | SHF_WRITE);
+    assert_eq!(sec.sh_type, SHT_PROGBITS);
+    assert_eq!(sec.bytes, vec![0x7E, 0x7E, 0x7E]);
+}
+
+#[test]
 fn nested_optional_blocks_create_separate_sections() {
     let asm = assemble_obj(
         "call outer\n\

@@ -126,8 +126,11 @@ the **first label that is referenced from outside the block** (the label that
 keeps the block alive):
 
 - a block containing code goes into `.text.<label>` (alloc + execute);
-- a block containing **only data** (no instructions) goes into `.data.<label>`
-  (alloc + write), so the data is relocatable and can be overridden.
+- a block that only reserves space with `.storage` (no filler, no other bytes)
+  goes into `.bss.<label>` (alloc + write, `SHT_NOBITS`) so it occupies no file
+  bytes but is reserved at run time;
+- any other data block goes into `.data.<label>` (alloc + write), so the data is
+  relocatable and can be overridden.
 
 Use `.setting optional, prune` to fall back to assemble-time pruning in object
 mode, or `.setting optional, sections` to force per-section emission. See

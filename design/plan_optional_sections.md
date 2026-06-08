@@ -8,9 +8,13 @@ at **link time**, instead of the current **assemble-time** pruning. This matches
 how the LLVM V6C backend emits one `.text.<func>` section per function.
 
 - Section name = `.text.<first label>` when the block contains code.
-- Section name = `.data.<first label>` when the block contains **only data**
-  (no instructions). `.data.*` is `SHF_ALLOC | SHF_WRITE` — relocatable and
-  overridable, suitable for data that another object may replace.
+- Section name = `.bss.<first label>` when the block only reserves space with
+  `.storage` (no filler, no other emitted bytes). `.bss.*` is
+  `SHF_ALLOC | SHF_WRITE`, `SHT_NOBITS` — reserved at run time but occupies no
+  file bytes.
+- Section name = `.data.<first label>` for any other data block. `.data.*` is
+  `SHF_ALLOC | SHF_WRITE` — relocatable and overridable, suitable for data that
+  another object may replace.
 - `<first label>` = the first label defined in the block that is **referenced
   from outside** the block (the label that keeps the block alive); falls back to
   the first defined label if none are referenced externally.
@@ -75,9 +79,11 @@ how the LLVM V6C backend emits one `.text.<func>` section per function.
 2. `IncludeAll` → `IncludeHere`.
 3. `Prune` → reference scan over lines outside the block; referenced →
    `IncludeHere`, else `Skip`.
-4. `Sections` → first referenced label → `IncludeInSection(".text."|".data." + label)`
-   (`.text.` if block contains an instruction or macro invocation, else
-   `.data.`); constants-only block with no label → `IncludeHere`.
+4. `Sections` → first referenced label → `IncludeInSection(<prefix> + label)`
+   where the prefix is chosen by block class: `.text.` if the block contains an
+   instruction or macro invocation; `.bss.` if it only reserves space via
+   `.storage` (no filler / no other emitted bytes); otherwise `.data.`.
+   Constants-only block with no label → `IncludeHere`.
 
 `OptionalAction { Skip, IncludeHere, IncludeInSection(String) }`.
 

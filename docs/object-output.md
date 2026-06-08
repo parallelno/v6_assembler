@@ -65,7 +65,9 @@ first label that is referenced from outside the block (the label that keeps the
 block alive):
 
 - a block containing code → `.text.<label>` (alloc + execute);
-- a block containing only data → `.data.<label>` (alloc + write), so the data is
+- a block that only reserves space with `.storage` (no filler) → `.bss.<label>`
+  (alloc + write, `SHT_NOBITS`): no file bytes, reserved at run time;
+- any other data block → `.data.<label>` (alloc + write), so the data is
   relocatable and overridable.
 
 Control this with `.setting optional`: `sections` (default in object mode) emits
