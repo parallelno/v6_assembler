@@ -145,6 +145,11 @@ pub struct ListingLine {
 #[derive(Debug, Clone)]
 pub struct AssemblerSettings {
     pub optional_enabled: bool,
+    /// In object mode, controls how `.optional` blocks are emitted:
+    /// `Some(true)` = each block in its own section (link-time pruning),
+    /// `Some(false)` = assemble-time pruning, `None` = format default
+    /// (sections in object mode, prune otherwise).
+    pub optional_sections: Option<bool>,
     /// Mirrors the preprocessor-level `force_once` setting for test assertions.
     pub force_once: bool,
 }
@@ -153,9 +158,31 @@ impl Default for AssemblerSettings {
     fn default() -> Self {
         Self {
             optional_enabled: true,
+            optional_sections: None,
             force_once: false,
         }
     }
+}
+
+/// Effective strategy for handling an `.optional` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionalStrategy {
+    /// Assemble-time pruning of unreferenced blocks.
+    Prune,
+    /// Emit each block into its own ELF section (object mode only).
+    Sections,
+    /// Always include every block in the current section.
+    IncludeAll,
+}
+
+/// What to do with a resolved `.optional` block.
+enum OptionalAction {
+    /// Drop the block (assemble-time pruning).
+    Skip,
+    /// Process the block in the current section.
+    IncludeHere,
+    /// Process the block in a dedicated section with the given name.
+    IncludeInSection(String),
 }
 
 /// The main assembler context
@@ -309,10 +336,16 @@ impl Assembler {
                         }
                         ControlDirective::Optional => {
                             let end = self.find_matching_block_end(lines, i, BlockKind::Optional)?;
-                            if !self.settings.optional_enabled
-                                || self.should_include_optional_block(lines, i + 1, end)?
-                            {
-                                self.process_lines_pass1(&lines[i + 1..end])?;
+                            match self.resolve_optional_block(lines, i + 1, end)? {
+                                OptionalAction::Skip => {}
+                                OptionalAction::IncludeHere => {
+                                    self.process_lines_pass1(&lines[i + 1..end])?;
+                                }
+                                OptionalAction::IncludeInSection(name) => {
+                                    let saved = self.enter_optional_section(&name);
+                                    self.process_lines_pass1(&lines[i + 1..end])?;
+                                    self.leave_optional_section(saved);
+                                }
                             }
                             i = end + 1;
                             continue;
@@ -513,7 +546,7 @@ impl Assembler {
             Directive::Setting(pairs) => {
                 for (key, val) in pairs {
                     if key.eq_ignore_ascii_case("optional") {
-                        self.settings.optional_enabled = !val.eq_ignore_ascii_case("false");
+                        self.apply_optional_setting(val);
                     } else if key.eq_ignore_ascii_case("force_once") {
                         self.settings.force_once |= !val.eq_ignore_ascii_case("false");
                     }
@@ -678,10 +711,16 @@ impl Assembler {
                                 byte_count: 0,
                                 macro_expansion: line.macro_context.is_some(),
                             });
-                            if !self.settings.optional_enabled
-                                || self.should_include_optional_block(lines, i + 1, end)?
-                            {
-                                self.process_lines_pass2(&lines[i + 1..end])?;
+                            match self.resolve_optional_block(lines, i + 1, end)? {
+                                OptionalAction::Skip => {}
+                                OptionalAction::IncludeHere => {
+                                    self.process_lines_pass2(&lines[i + 1..end])?;
+                                }
+                                OptionalAction::IncludeInSection(name) => {
+                                    let saved = self.enter_optional_section(&name);
+                                    self.process_lines_pass2(&lines[i + 1..end])?;
+                                    self.leave_optional_section(saved);
+                                }
                             }
                             // Record the closing .endoptional
                             let end_line = &lines[end];
@@ -913,12 +952,92 @@ impl Assembler {
             .ensure_location(&lines[start].file, lines[start].line_num))
     }
 
-    fn should_include_optional_block(&self, lines: &[SourceLine], block_start: usize, block_end: usize) -> AsmResult<bool> {
-        let defined = self.collect_optional_block_symbols(&lines[block_start..block_end])?;
+    /// The effective strategy for handling `.optional` blocks given the current
+    /// settings and output format.
+    fn optional_strategy(&self) -> OptionalStrategy {
+        if !self.settings.optional_enabled {
+            return OptionalStrategy::IncludeAll;
+        }
+        let want_sections = self
+            .settings
+            .optional_sections
+            .unwrap_or(self.output_format == OutputFormat::Obj);
+        if want_sections && self.output_format == OutputFormat::Obj {
+            OptionalStrategy::Sections
+        } else {
+            OptionalStrategy::Prune
+        }
+    }
+
+    /// Apply a `.setting optional, <val>` value. Accepts `true`/`false`,
+    /// `prune`/`sections`, and `disabled`.
+    fn apply_optional_setting(&mut self, val: &str) {
+        if val.eq_ignore_ascii_case("false") || val.eq_ignore_ascii_case("disabled") {
+            self.settings.optional_enabled = false;
+        } else if val.eq_ignore_ascii_case("prune") {
+            self.settings.optional_enabled = true;
+            self.settings.optional_sections = Some(false);
+        } else if val.eq_ignore_ascii_case("sections") {
+            self.settings.optional_enabled = true;
+            self.settings.optional_sections = Some(true);
+        } else {
+            // `true` and any other value enable pruning with the format default.
+            self.settings.optional_enabled = true;
+        }
+    }
+
+    /// Decide how to handle the `.optional` block covering
+    /// `lines[block_start..block_end]`. `block_start` is the index just after
+    /// the `.optional` directive (so `block_start - 1` is the directive line).
+    fn resolve_optional_block(
+        &self,
+        lines: &[SourceLine],
+        block_start: usize,
+        block_end: usize,
+    ) -> AsmResult<OptionalAction> {
+        let block = &lines[block_start..block_end];
+        let defined = self.collect_optional_block_symbols(block)?;
         if defined.is_empty() {
-            return Ok(false);
+            let loc = &lines[block_start.saturating_sub(1)];
+            return Err(AsmError::new(
+                "an .optional/.function block must define at least one label or constant"
+                    .to_string(),
+            )
+            .ensure_location(&loc.file, loc.line_num));
         }
 
+        match self.optional_strategy() {
+            OptionalStrategy::IncludeAll => Ok(OptionalAction::IncludeHere),
+            OptionalStrategy::Prune => {
+                if self.optional_block_referenced(lines, block_start, block_end, &defined)? {
+                    Ok(OptionalAction::IncludeHere)
+                } else {
+                    Ok(OptionalAction::Skip)
+                }
+            }
+            OptionalStrategy::Sections => match self.optional_block_first_label(block)? {
+                Some(label) => {
+                    let prefix = if self.optional_block_is_code(block)? {
+                        ".text."
+                    } else {
+                        ".data."
+                    };
+                    Ok(OptionalAction::IncludeInSection(format!("{prefix}{label}")))
+                }
+                None => Ok(OptionalAction::IncludeHere),
+            },
+        }
+    }
+
+    /// Returns true if any symbol defined in the block is referenced by a line
+    /// outside the block (the assemble-time pruning test).
+    fn optional_block_referenced(
+        &self,
+        lines: &[SourceLine],
+        block_start: usize,
+        block_end: usize,
+        defined: &[String],
+    ) -> AsmResult<bool> {
         for (idx, line) in lines.iter().enumerate() {
             if idx >= block_start && idx < block_end {
                 continue;
@@ -937,6 +1056,64 @@ impl Assembler {
         }
 
         Ok(false)
+    }
+
+    /// The first global label defined in the block, used to name its dedicated
+    /// section in `sections` mode.
+    fn optional_block_first_label(&self, lines: &[SourceLine]) -> AsmResult<Option<String>> {
+        for line in lines {
+            if parse_macro_invocation(&line.text, &self.symbols).is_some() {
+                continue;
+            }
+            let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
+            if tokens.is_empty() {
+                continue;
+            }
+            let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
+            for item in parsed {
+                if let ParsedLine::Label(name) = item {
+                    return Ok(Some(name));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Returns true if the block contains any instruction (or macro invocation,
+    /// which expands to instructions), meaning it belongs in a `.text.*`
+    /// section rather than a data `.data.*` section.
+    fn optional_block_is_code(&self, lines: &[SourceLine]) -> AsmResult<bool> {
+        for line in lines {
+            if parse_macro_invocation(&line.text, &self.symbols).is_some() {
+                return Ok(true);
+            }
+            let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
+            if tokens.is_empty() {
+                continue;
+            }
+            let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
+            for item in parsed {
+                if let ParsedLine::Instruction { .. } = item {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Switch to a dedicated section for an `.optional` block, returning the
+    /// saved `(active section, pc)` to restore afterwards. Object mode only.
+    fn enter_optional_section(&mut self, name: &str) -> (usize, u16) {
+        let saved = (self.obj.active, self.pc);
+        self.switch_section(name);
+        saved
+    }
+
+    /// Restore the active section and pc saved by `enter_optional_section`.
+    fn leave_optional_section(&mut self, saved: (usize, u16)) {
+        let (active, pc) = saved;
+        self.obj.active = active;
+        self.pc = pc;
     }
 
     fn collect_optional_block_symbols(&self, lines: &[SourceLine]) -> AsmResult<Vec<String>> {
@@ -1042,7 +1219,7 @@ impl Assembler {
             Directive::Setting(pairs) => {
                 for (key, val) in pairs {
                     if key.eq_ignore_ascii_case("optional") {
-                        self.settings.optional_enabled = !val.eq_ignore_ascii_case("false");
+                        self.apply_optional_setting(val);
                     } else if key.eq_ignore_ascii_case("force_once") {
                         self.settings.force_once |= !val.eq_ignore_ascii_case("false");
                     }

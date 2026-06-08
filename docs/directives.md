@@ -99,6 +99,8 @@ The example above emits `Value` three times (0, 1, 2) and leaves `Value` set to 
 
 Defines an optional code block that is automatically removed from output if none of its internal labels and constants are used externally. Short forms: `.opt` / `.endopt`.
 
+A block must define at least one label or constant; an `.optional` block that defines none is an error, since a block with no externally visible symbols can never be referenced.
+
 ```asm
 .optional
 useless_byte:
@@ -115,6 +117,22 @@ useful_routine:
 .endopt
 ```
 
+### Object mode (`-f obj`)
+
+In object mode each `.optional` block is, by default, emitted into its own ELF
+section so the linker prunes unused blocks at link time (`ld.lld
+--gc-sections`), instead of assemble-time pruning. The section is named after
+the **first label** defined in the block:
+
+- a block containing code goes into `.text.<label>` (alloc + execute);
+- a block containing **only data** (no instructions) goes into `.data.<label>`
+  (alloc + write), so the data is relocatable and can be overridden.
+
+Use `.setting optional, prune` to fall back to assemble-time pruning in object
+mode, or `.setting optional, sections` to force per-section emission. See
+[`.setting`](#setting) and [Object Output](object-output.md).
+
+
 ## `.function` / `.endfunction`
 
 This is an alias for `.optional` / `.endoptional`. Short forms: `.func` / `.endfunc`
@@ -125,11 +143,12 @@ Updates assembler defaults using non-case-sensitive key/value pairs. Values may 
 
 | Key | Values | Default | Description |
 |-----|--------|---------|-------------|
-| `optional` | `true` / `false` | `true` | Enable or disable pruning of unreferenced `.optional` blocks. |
+| `optional` | `true` / `false` / `prune` / `sections` | `true` | Controls handling of `.optional` blocks. `false` disables pruning (all blocks kept). `prune` forces assemble-time pruning of unreferenced blocks. `sections` (object mode only) emits each block into its own section for link-time pruning. In object mode the default is `sections`; in ROM mode it is `prune`. |
 | `force_once` | `true` / `false` | `false` | Include this file and all files it includes at most once (see below). |
 
 ```asm
 .setting optional, false          ; disables pruning of .optional blocks
+.setting optional, sections       ; emit each .optional block as its own section (obj mode)
 .setting force_once, true         ; deduplicate this file and its sub-includes
 .setting force_once, true, optional, false  ; multiple pairs in one directive
 ```

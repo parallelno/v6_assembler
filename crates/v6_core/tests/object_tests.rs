@@ -265,6 +265,118 @@ fn cross_section_reference_uses_target_section() {
     assert_eq!(r.addend, 0);
 }
 
+// ── .optional blocks become sections ─────────────────────────────────────────
+
+#[test]
+fn optional_code_block_becomes_text_section() {
+    use v6_core::object::section::{SHF_ALLOC, SHF_EXECINSTR, SHT_PROGBITS};
+
+    let asm = assemble_obj(
+        "call helper\n\
+         .opt\n\
+         helper:\n\
+         mvi a, 1\n\
+         ret\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".text.helper")
+        .expect("expected a .text.helper section");
+    assert_eq!(sec.flags, SHF_ALLOC | SHF_EXECINSTR);
+    assert_eq!(sec.sh_type, SHT_PROGBITS);
+    // mvi a,1 (2 bytes) + ret (1 byte)
+    assert_eq!(sec.size, 3);
+}
+
+#[test]
+fn optional_data_block_becomes_data_section() {
+    use v6_core::object::section::{SHF_ALLOC, SHF_WRITE, SHT_PROGBITS};
+
+    let asm = assemble_obj(
+        "lxi h, table\n\
+         .opt\n\
+         table:\n\
+         .byte 1, 2, 3\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".data.table")
+        .expect("expected a .data.table section");
+    assert_eq!(sec.flags, SHF_ALLOC | SHF_WRITE);
+    assert_eq!(sec.sh_type, SHT_PROGBITS);
+    assert_eq!(sec.size, 3);
+    assert_eq!(sec.bytes, vec![1, 2, 3]);
+}
+
+#[test]
+fn nested_optional_blocks_create_separate_sections() {
+    let asm = assemble_obj(
+        "call outer\n\
+         .opt\n\
+         outer:\n\
+         call inner\n\
+         ret\n\
+         .opt\n\
+         inner:\n\
+         ret\n\
+         .endopt\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let names: Vec<&str> = asm.obj.sections.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&".text.outer"), "sections: {names:?}");
+    assert!(names.contains(&".text.inner"), "sections: {names:?}");
+}
+
+#[test]
+fn setting_optional_prune_disables_sections_in_obj_mode() {
+    // With prune mode, an unreferenced block is dropped and no dedicated
+    // section is created.
+    let asm = assemble_obj(
+        ".setting optional, prune\n\
+         .opt\n\
+         unused:\n\
+         .byte 9\n\
+         .endopt\n\
+         nop\n",
+    )
+    .unwrap();
+
+    let names: Vec<&str> = asm.obj.sections.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        !names.iter().any(|n| n.starts_with(".data.") || n.starts_with(".text.unused")),
+        "expected no dedicated optional section, got: {names:?}"
+    );
+}
+
+#[test]
+fn optional_block_without_symbols_is_an_error() {
+    let err = match assemble_obj(
+        ".opt\n\
+         nop\n\
+         .endopt\n",
+    ) {
+        Ok(_) => panic!("expected an error for a label-less .optional block"),
+        Err(e) => e,
+    };
+    let msg = format!("{}", err).to_lowercase();
+    assert!(
+        msg.contains("optional"),
+        "expected an .optional error, got: {msg}"
+    );
+}
+
 // ── org rejected in obj mode ─────────────────────────────────────────────────
 
 #[test]

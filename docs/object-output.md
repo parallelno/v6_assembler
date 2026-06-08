@@ -56,6 +56,22 @@ reserves space via `.storage` but stores no bytes in the file.
 
 `.org` is **rejected** in object mode — absolute placement is the linker's job.
 
+### `.optional` blocks become sections
+
+In object mode, each `.optional` / `.function` block is emitted into its own
+section by default, so unused blocks are pruned at link time by `ld.lld
+--gc-sections` rather than at assemble time. The section is named after the
+first label defined in the block:
+
+- a block containing code → `.text.<label>` (alloc + execute);
+- a block containing only data → `.data.<label>` (alloc + write), so the data is
+  relocatable and overridable.
+
+Control this with `.setting optional`: `sections` (default in object mode) emits
+per-block sections, while `prune` restores assemble-time pruning. A block that
+defines no label or constant is an error.
+
+
 ## Symbol model
 
 - Defined labels are **local by default** and are not individually exported;
