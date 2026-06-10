@@ -608,7 +608,14 @@ pub fn replace_param(text: &str, param: &str, value: &str) -> String {
                 let after_ok = i + param_chars.len() >= chars.len()
                     || !is_ident_char(chars[i + param_chars.len()]);
                 if before_ok && after_ok {
-                    result.push_str(value);
+                    // Wrap multi-token values in parentheses to preserve operator precedence
+                    if value.contains(' ') {
+                        result.push('(');
+                        result.push_str(value);
+                        result.push(')');
+                    } else {
+                        result.push_str(value);
+                    }
                     i += param_chars.len();
                     continue;
                 }

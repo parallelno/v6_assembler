@@ -391,6 +391,88 @@ fn optional_storage_with_filler_stays_in_data_section() {
 }
 
 #[test]
+fn align_before_optional_propagates_to_section() {
+    // A `.align` placed just before `.opt` must transfer its alignment to the
+    // section the optional block creates, so the linker can honor it.
+    let asm = assemble_obj(
+        "lxi h, buffer\n\
+         .align 256\n\
+         .opt\n\
+         buffer:\n\
+         .storage 8, 0\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".data.buffer")
+        .expect("expected a .data.buffer section");
+    assert_eq!(sec.addralign, 256);
+}
+
+#[test]
+fn align_before_section_propagates_to_section() {
+    // The same rule applies to an explicit `.section` switch.
+    let asm = assemble_obj(
+        ".align 64\n\
+         .section .mydata\n\
+         .byte 1, 2, 3\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".mydata")
+        .expect("expected a .mydata section");
+    assert_eq!(sec.addralign, 64);
+}
+
+#[test]
+fn align_inside_section_raises_its_alignment() {
+    // `.align` within a section raises that section's own alignment.
+    let asm = assemble_obj(
+        ".section .data\n\
+         .byte 1\n\
+         .align 16\n\
+         .byte 2\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".data")
+        .expect("expected a .data section");
+    assert_eq!(sec.addralign, 16);
+}
+
+#[test]
+fn no_align_leaves_default_alignment() {
+    let asm = assemble_obj(
+        "lxi h, buffer\n\
+         .opt\n\
+         buffer:\n\
+         .storage 8, 0\n\
+         .endopt\n",
+    )
+    .unwrap();
+
+    let sec = asm
+        .obj
+        .sections
+        .iter()
+        .find(|s| s.name == ".data.buffer")
+        .expect("expected a .data.buffer section");
+    assert_eq!(sec.addralign, 1);
+}
+
+#[test]
 fn nested_optional_blocks_create_separate_sections() {
     let asm = assemble_obj(
         "call outer\n\

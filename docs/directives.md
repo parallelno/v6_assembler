@@ -300,6 +300,22 @@ AlignedLabel:
 
 `AlignedLabel` is assigned the aligned address ($110) and the gap between `$103` and `$10F` is filled with zeros.
 
+### Object mode
+
+When emitting a relocatable object (`-f obj`), `.align` additionally raises the
+enclosing section's required alignment (`sh_addralign`) so the linker preserves
+it. A `.align` placed immediately before a `.section` or `.optional` directive
+propagates to the section that directive creates, letting you align a generated
+section (for example a 256-byte page-aligned buffer):
+
+```asm
+.align 256      ; align the section created below
+.opt
+_v6_gc_buffer:
+  .storage 256 * 14, 0   ; -> .data._v6_gc_buffer with sh_addralign = 256
+.endopt
+```
+
 ## `.storage`
 
 Reserves bytes of address space. If `Filler` is provided, the assembler emits that byte `Length` times. If omitted, the bytes are uninitialized (PC advances but nothing is written), useful for runtime buffers.

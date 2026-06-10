@@ -253,7 +253,7 @@ pub fn serialize(sections: &[Section], symbols: &[ObjSymbol]) -> Vec<u8> {
             size: s.size,
             link: 0,
             info: 0,
-            addralign: 1,
+            addralign: s.addralign.max(1),
             entsize: 0,
             data: s.bytes.clone(),
             is_nobits: s.is_nobits(),

@@ -56,6 +56,15 @@ reserves space via `.storage` but stores no bytes in the file.
 
 `.org` is **rejected** in object mode — absolute placement is the linker's job.
 
+### Section alignment
+
+Each section records a required alignment (`sh_addralign`, default 1). The
+`.align` directive raises the active section's alignment, and an `.align`
+placed immediately before a `.section` or `.optional` directive propagates to
+the section that directive creates. This lets a generated section (such as a
+page-aligned buffer) carry the alignment the linker must honor.
+
+
 ### `.optional` blocks become sections
 
 In object mode, each `.optional` / `.function` block is emitted into its own

@@ -219,6 +219,10 @@ pub struct Assembler {
     _optional_stack: Vec<OptionalBlock>,
     _optional_blocks: Vec<OptionalBlockInfo>,
 
+    /// Pending section alignment from a `.align` directive, applied to the next
+    /// section entered via `.section`/`.optional` (object mode). 1 = none.
+    pending_align: u32,
+
     // Loop/if expansion depth tracking
     macro_depth: usize,
 }
@@ -252,6 +256,7 @@ impl Assembler {
             project_dir,
             _optional_stack: Vec::new(),
             _optional_blocks: Vec::new(),
+            pending_align: 1,
             macro_depth: 0,
         }
     }
@@ -287,6 +292,7 @@ impl Assembler {
         if self.output_format == OutputFormat::Obj {
             self.obj = ObjectState::new();
         }
+        self.pending_align = 1;
     }
 
     fn pass1(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
@@ -519,6 +525,10 @@ impl Assembler {
                     if self.pc & mask != 0 {
                         let target = (self.pc | mask).wrapping_add(1);
                         self.advance_pc(target.wrapping_sub(self.pc));
+                    }
+                    if self.output_format == OutputFormat::Obj {
+                        self.obj.sections[self.obj.active].set_align(alignment as u32);
+                        self.pending_align = alignment as u32;
                     }
                 }
             }
@@ -1235,6 +1245,10 @@ impl Assembler {
                         let pad = target.wrapping_sub(self.pc);
                         self.out_reserve(pad, Some(0));
                     }
+                    if self.output_format == OutputFormat::Obj {
+                        self.obj.sections[self.obj.active].set_align(alignment as u32);
+                        self.pending_align = alignment as u32;
+                    }
                 }
             }
             Directive::Storage { length, filler } => {
@@ -1529,6 +1543,7 @@ impl Assembler {
 
     /// Emit a single byte to the active output (ROM image or active section).
     fn out_emit_byte(&mut self, b: u8) {
+        self.pending_align = 1;
         match self.output_format {
             OutputFormat::Rom => self.output.write_byte(self.pc, b),
             OutputFormat::Obj => self.obj.sections[self.obj.active].push_byte(b),
@@ -1547,6 +1562,7 @@ impl Assembler {
     /// ROM mode the location counter just advances (leaving a gap); in object
     /// mode bytes are always materialized (zeros) for PROGBITS sections.
     fn out_reserve(&mut self, len: u16, fill: Option<u8>) {
+        self.pending_align = 1;
         match self.output_format {
             OutputFormat::Rom => {
                 if let Some(f) = fill {
@@ -1594,19 +1610,26 @@ impl Assembler {
         }
     }
 
-    /// Switch to (or create) a section, syncing the location counter.
+    /// Switch to (or create) a section, syncing the location counter. Applies
+    /// and clears any pending `.align` so the entered section receives the
+    /// alignment requested just before the section/optional directive.
     fn switch_section(&mut self, name: &str) {
         if self.output_format != OutputFormat::Obj {
             return;
         }
         let idx = self.obj.section_index(name);
         self.obj.active = idx;
+        if self.pending_align > 1 {
+            self.obj.sections[idx].set_align(self.pending_align);
+        }
+        self.pending_align = 1;
         self.pc = self.obj.sections[idx].size as u16;
     }
 
     /// Advance the location counter (pass 1 size tracking), keeping the active
     /// section size in sync in object mode.
     fn advance_pc(&mut self, n: u16) {
+        self.pending_align = 1;
         self.pc = self.pc.wrapping_add(n);
         if self.output_format == OutputFormat::Obj {
             self.obj.sections[self.obj.active].size += n as u32;

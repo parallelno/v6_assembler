@@ -87,6 +87,8 @@ pub struct Section {
     /// Logical size of the section. For PROGBITS this tracks `bytes.len()`;
     /// for NOBITS (`.bss`) it grows without storing bytes.
     pub size: u32,
+    /// Required address alignment (`sh_addralign`); a power of two, at least 1.
+    pub addralign: u32,
     /// Relocations applying to this section.
     pub relocs: Vec<Reloc>,
 }
@@ -99,6 +101,7 @@ impl Section {
             sh_type,
             bytes: Vec::new(),
             size: 0,
+            addralign: 1,
             relocs: Vec::new(),
         }
     }
@@ -128,6 +131,14 @@ impl Section {
     /// Record a relocation.
     pub fn add_reloc(&mut self, reloc: Reloc) {
         self.relocs.push(reloc);
+    }
+
+    /// Raise the section's required alignment to at least `a` (`a` is a power
+    /// of two). Lower or equal requests are ignored.
+    pub fn set_align(&mut self, a: u32) {
+        if a > self.addralign {
+            self.addralign = a;
+        }
     }
 
     /// Default flags for a well-known section name.
