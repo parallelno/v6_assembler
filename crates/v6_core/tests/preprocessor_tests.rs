@@ -48,6 +48,26 @@ fn test_replace_param() {
 }
 
 #[test]
+fn test_replace_param_string_with_space() {
+    // A quoted string argument containing a space must NOT be wrapped in extra
+    // parentheses — `"A B"` should stay `"A B"`, not become `("A B")`.
+    assert_eq!(replace_param(".text s", "s", "\"A B\""), ".text \"A B\"");
+    // But a numeric expression with a space SHOULD be wrapped.
+    assert_eq!(replace_param(".byte n", "n", "1 + 2"), ".byte (1 + 2)");
+    // A plain string without spaces is unchanged.
+    assert_eq!(replace_param(".text s", "s", "\"AB\""), ".text \"AB\"");
+}
+
+#[test]
+fn test_parse_macro_args_string_with_space() {
+    // Quoted string arguments with internal spaces must parse as a single argument.
+    let args = parse_macro_args("\"A B\", 9");
+    assert_eq!(args, vec!["\"A B\"", "9"]);
+    let args = parse_macro_args("\"hello world\"");
+    assert_eq!(args, vec!["\"hello world\""]);
+}
+
+#[test]
 fn test_parse_macro_args() {
     let args = parse_macro_args("$0b, $0f, PalettePtr");
     assert_eq!(args, vec!["$0b", "$0f", "PalettePtr"]);

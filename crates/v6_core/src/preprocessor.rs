@@ -608,8 +608,10 @@ pub fn replace_param(text: &str, param: &str, value: &str) -> String {
                 let after_ok = i + param_chars.len() >= chars.len()
                     || !is_ident_char(chars[i + param_chars.len()]);
                 if before_ok && after_ok {
-                    // Wrap multi-token values in parentheses to preserve operator precedence
-                    if value.contains(' ') {
+                    // Wrap multi-token values in parentheses to preserve operator precedence,
+                    // but only when the space is outside a string literal.
+                    // e.g. `a + b` → `(a + b)` but `"A B"` stays `"A B"`.
+                    if has_space_outside_string(value) {
                         result.push('(');
                         result.push_str(value);
                         result.push(')');
@@ -626,6 +628,33 @@ pub fn replace_param(text: &str, param: &str, value: &str) -> String {
         i += 1;
     }
     result
+}
+
+/// Returns true if `s` contains a space character that is not inside a string
+/// or char literal. Used to decide whether a macro argument value needs to be
+/// wrapped in parentheses when substituted into an expression.
+fn has_space_outside_string(s: &str) -> bool {
+    let mut in_string = false;
+    let mut string_char = '"';
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string {
+            if c == '\\' {
+                // Skip escaped character
+                chars.next();
+                continue;
+            }
+            if c == string_char {
+                in_string = false;
+            }
+        } else if c == '"' || c == '\'' {
+            in_string = true;
+            string_char = c;
+        } else if c == ' ' {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_ident_char(c: char) -> bool {
