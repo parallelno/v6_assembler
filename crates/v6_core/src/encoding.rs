@@ -72,8 +72,6 @@ fn screencode_commodore(ch: char, case: EncodingCase) -> u8 {
                 b'a'..=b'z' => c - b'a' + 1,
                 b'[' => 0x1B,
                 b']' => 0x1D,
-                b' ' => 0x20,
-                b'!'..=b'?' => c - b' ',
                 _ => c,
             }
         }
@@ -82,8 +80,6 @@ fn screencode_commodore(ch: char, case: EncodingCase) -> u8 {
                 b'@' => 0x00,
                 b'a'..=b'z' => c - b'a' + 1,
                 b'A'..=b'Z' => c - b'A' + 0x41,
-                b' ' => 0x20,
-                b'!'..=b'?' => c - b' ',
                 _ => c,
             }
         }

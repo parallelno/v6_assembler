@@ -1,10 +1,12 @@
 # Tests .encoding "screencodecommodore" maps @, A, B to 0, 1, 2
+# and that digits/punctuation (0x21-0x3F) are unchanged from ASCII
 
 [files]
 "main.asm" = '''
 .encoding "screencodecommodore"
 .text "@AB"
+.text "2."
 '''
 
 [expect]
-rom = "00 01 02"
+rom = "00 01 02 32 2E"
