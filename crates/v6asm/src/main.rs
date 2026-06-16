@@ -67,6 +67,10 @@ struct Cli {
     #[arg(short = 'I', long = "include-dir")]
     include_dirs: Vec<PathBuf>,
 
+    /// Pre-define a symbol: NAME or NAME=VALUE (decimal or 0x hex)
+    #[arg(short = 'D', long = "define")]
+    defines: Vec<String>,
+
     /// Print version information
     #[arg(short = 'v', long = "version")]
     version: bool,
@@ -219,6 +223,32 @@ mod tests {
         assert_eq!(version_string(), env!("V6ASM_VERSION"));
         assert!(version_string().contains('-'));
     }
+
+    #[test]
+    fn parses_define_flags() {
+        let cli = Cli::try_parse_from(["v6asm", "main.asm", "-D", "FOO=42", "-D", "BAR=0xFF", "-D", "FLAG"]).unwrap();
+        assert_eq!(cli.defines, vec!["FOO=42", "BAR=0xFF", "FLAG"]);
+    }
+
+    #[test]
+    fn parse_define_decimal() {
+        assert_eq!(super::parse_define("FOO=42").unwrap(), ("FOO", 42));
+    }
+
+    #[test]
+    fn parse_define_hex() {
+        assert_eq!(super::parse_define("ADDR=0xFF").unwrap(), ("ADDR", 255));
+    }
+
+    #[test]
+    fn parse_define_no_value_defaults_to_1() {
+        assert_eq!(super::parse_define("FLAG").unwrap(), ("FLAG", 1));
+    }
+
+    #[test]
+    fn parse_define_empty_name_errors() {
+        assert!(super::parse_define("=5").is_err());
+    }
 }
 
 fn cmd_init(name: &str) -> Result<(), AsmError> {
@@ -237,6 +267,32 @@ fn cmd_init(name: &str) -> Result<(), AsmError> {
 
 // ---- Assemble command ----
 
+/// Parse a `-D` define string of the form `NAME` or `NAME=VALUE`.
+/// VALUE may be decimal or hex (0x prefix). Returns (name, value).
+fn parse_define(s: &str) -> AsmResult<(&str, i64)> {
+    if let Some((name, val_str)) = s.split_once('=') {
+        let name = name.trim();
+        let val_str = val_str.trim();
+        if name.is_empty() {
+            return Err(AsmError::new(format!("Invalid -D argument '{}': name is empty", s)));
+        }
+        let value = if let Some(hex) = val_str.strip_prefix("0x").or_else(|| val_str.strip_prefix("0X")) {
+            i64::from_str_radix(hex, 16)
+                .map_err(|_| AsmError::new(format!("Invalid -D argument '{}': bad hex value", s)))?
+        } else {
+            val_str.parse::<i64>()
+                .map_err(|_| AsmError::new(format!("Invalid -D argument '{}': bad integer value", s)))?
+        };
+        Ok((name, value))
+    } else {
+        let name = s.trim();
+        if name.is_empty() {
+            return Err(AsmError::new("Invalid -D argument: name is empty".to_string()));
+        }
+        Ok((name, 1))
+    }
+}
+
 fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
     if !source_path.exists() {
         return Err(AsmError::new(format!("Source file not found: {}", source_path.display())));
@@ -246,6 +302,14 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
 
     // Preprocess sources
     let mut symbols = SymbolTable::new();
+
+    // Pre-define symbols from -D flags
+    for define in &cli.defines {
+        let (name, value) = parse_define(define)?;
+        symbols.define_constant(name, value, "<cli>", 0)
+            .map_err(|e| AsmError::new(format!("-D {}: {}", define, e.message)))?;
+    }
+
     let read_file_fn = |path: &Path| -> AsmResult<String> {
         std::fs::read_to_string(path)
             .map_err(|e| AsmError::new(format!("Cannot read {}: {}", path.display(), e)))
