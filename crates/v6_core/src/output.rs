@@ -99,9 +99,9 @@ pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8
     // `.global *` — export every module-level symbol (excluding `@`-prefixed locals).
     if asm.obj.glob_all {
         let mut all_names: Vec<String> = asm.symbols.all_globals()
-            .keys()
-            .filter(|k| !k.starts_with('@'))
-            .cloned()
+            .values()
+            .filter(|info| !info.original_name.starts_with('@'))
+            .map(|info| info.original_name.clone())
             .collect();
         all_names.sort();
         for name in &all_names {
