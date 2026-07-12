@@ -96,6 +96,19 @@ pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8
         push_named(name, SymBinding::Weak);
     }
 
+    // `.global *` — export every module-level symbol (excluding `@`-prefixed locals).
+    if asm.obj.glob_all {
+        let mut all_names: Vec<String> = asm.symbols.all_globals()
+            .keys()
+            .filter(|k| !k.starts_with('@'))
+            .cloned()
+            .collect();
+        all_names.sort();
+        for name in &all_names {
+            push_named(name, SymBinding::Global);
+        }
+    }
+
     // Undefined externals referenced by relocations.
     for sec in sections {
         for r in &sec.relocs {

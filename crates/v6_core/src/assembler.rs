@@ -34,6 +34,8 @@ pub struct ObjectState {
     pub weaks: Vec<String>,
     /// Names (original case) marked `.local`.
     pub locals: Vec<String>,
+    /// Set when `.globl *` is used — export all module-level symbols.
+    pub glob_all: bool,
 }
 
 impl ObjectState {
@@ -48,6 +50,7 @@ impl ObjectState {
             globls: Vec::new(),
             weaks: Vec::new(),
             locals: Vec::new(),
+            glob_all: false,
         }
     }
 
@@ -553,6 +556,7 @@ impl Assembler {
                 self.switch_section(name);
             }
             Directive::Globl(names) => self.apply_binding(names, BindingKind::Global),
+            Directive::GloblAll => { if self.output_format == OutputFormat::Obj { self.obj.glob_all = true; } }
             Directive::Weak(names) => self.apply_binding(names, BindingKind::Weak),
             Directive::Local(names) => self.apply_binding(names, BindingKind::Local),
             Directive::Encoding { enc_type, case } => {
@@ -1292,6 +1296,7 @@ impl Assembler {
                 self.switch_section(name);
             }
             Directive::Globl(names) => self.apply_binding(names, BindingKind::Global),
+            Directive::GloblAll => { if self.output_format == OutputFormat::Obj { self.obj.glob_all = true; } }
             Directive::Weak(names) => self.apply_binding(names, BindingKind::Weak),
             Directive::Local(names) => self.apply_binding(names, BindingKind::Local),
             Directive::Encoding { enc_type, case } => {

@@ -65,6 +65,9 @@ pub enum Directive {
     Section(String),
     /// Mark symbols as global (exported): `.globl`/`.global`.
     Globl(Vec<String>),
+    /// Mark all module-level symbols as global (exported): `.globl *`/`.global *`.
+    /// Symbols whose names begin with `@` (local-scoped labels/constants) are excluded.
+    GloblAll,
     /// Mark symbols as weak.
     Weak(Vec<String>),
     /// Mark symbols as local.
@@ -484,7 +487,15 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
         "DATA" => Ok(Directive::Section(".data".to_string())),
         "RODATA" => Ok(Directive::Section(".rodata".to_string())),
         "BSS" => Ok(Directive::Section(".bss".to_string())),
-        "GLOBL" | "GLOBAL" => Ok(Directive::Globl(parse_symbol_list(tokens, pos))),
+        "GLOBL" | "GLOBAL" => {
+            // `.global *` — export all module-level symbols.
+            if matches!(tokens.get(*pos).map(|t| &t.value), Some(Token::Operator(op)) if op == "*") {
+                *pos += 1;
+                Ok(Directive::GloblAll)
+            } else {
+                Ok(Directive::Globl(parse_symbol_list(tokens, pos)))
+            }
+        }
         "WEAK" => Ok(Directive::Weak(parse_symbol_list(tokens, pos))),
         "LOCAL" => Ok(Directive::Local(parse_symbol_list(tokens, pos))),
         _ => Err(AsmError::new(format!("Unknown directive: .{}", name))),

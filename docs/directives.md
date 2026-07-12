@@ -419,6 +419,14 @@ Mark one or more symbols as global (externally visible). Global symbols are expo
 .globl interruption, vblank_handler
 ```
 
+Use `*` as a wildcard to export every module-level symbol in the file — useful for header-style constant modules where all definitions should be visible to other objects:
+
+```asm
+.global *          ; export all labels and constants in this module
+```
+
+Symbols whose names begin with `@` (local-scoped labels and constants) are never exported by this form, since their names are intentionally non-unique across scopes.
+
 ### `.weak`
 
 Mark one or more symbols as weak. A weak definition can be overridden by a strong (global) definition in another object, and an unresolved weak reference links as zero instead of erroring.
