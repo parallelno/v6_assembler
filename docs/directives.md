@@ -222,6 +222,24 @@ mem_fill_sp:              ; new global label -> new local scope
 
 Locals can be redefined in a scope; references before a redefinition bind to the earlier definition, references after bind to the later one. Use globals for cross-scope jumps or data addresses.
 
+Exmple:
+```asm
+start:
+
+@loop:
+  nop
+  jmp @loop     ; jumps to the first @loop
+
+  ; ... some code ...
+
+@loop:
+  mov a, b
+  jmp @loop     ; jumps to the second @loop
+```
+A reference to @loop looks for the closest matching definition in the current scope:
+* If there is a definition before the reference, it uses the most recent previous one.
+* there is no previous definition, it may use the next definition ahead in the same scope.
+
 ### Constants (`=` / `EQU`)
 
 Defines an immutable constant. Both plain and label-style forms are accepted (e.g., `CONST:` followed by `= expr`). The assembler defers evaluating these expressions until after the first pass, so forward references work. Reassigning a constant with a different value triggers an error; use `.var` for mutability.
@@ -418,14 +436,6 @@ Mark one or more symbols as global (externally visible). Global symbols are expo
 ```asm
 .globl interruption, vblank_handler
 ```
-
-Use `*` as a wildcard to export every module-level symbol in the file — useful for header-style constant modules where all definitions should be visible to other objects:
-
-```asm
-.global *          ; export all labels and constants in this module
-```
-
-Symbols whose names begin with `@` (local-scoped labels and constants) are never exported by this form, since their names are intentionally non-unique across scopes.
 
 ### `.weak`
 
