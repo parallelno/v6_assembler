@@ -63,26 +63,19 @@ impl Encoding {
 }
 
 fn screencode_commodore(ch: char, case: EncodingCase) -> u8 {
-    let c = ch as u8;
-    match case {
-        EncodingCase::Mixed | EncodingCase::Upper => {
-            match c {
-                b'@' => 0x00,
-                b'A'..=b'Z' => c - b'A' + 1,
-                b'a'..=b'z' => c - b'a' + 1,
-                b'[' => 0x1B,
-                b']' => 0x1D,
-                _ => c,
-            }
-        }
-        EncodingCase::Lower => {
-            match c {
-                b'@' => 0x00,
-                b'a'..=b'z' => c - b'a' + 1,
-                b'A'..=b'Z' => c - b'A' + 0x41,
-                _ => c,
-            }
-        }
+    let c = match case {
+        EncodingCase::Mixed => ch as u8,
+        EncodingCase::Lower => ch.to_ascii_lowercase() as u8,
+        EncodingCase::Upper => ch.to_ascii_uppercase() as u8,
+    };
+
+    match c {
+        b'@' => 0x00,
+        b'a'..=b'z' => c - b'a' + 1,
+        b'A'..=b'Z' => c - b'A' + 0x41,
+        b'[' => 0x1B,
+        b']' => 0x1D,
+        _ => c,
     }
 }
 

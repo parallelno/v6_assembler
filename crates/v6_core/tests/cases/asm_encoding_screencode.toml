@@ -1,12 +1,12 @@
-# Tests .encoding "screencodecommodore" maps @, A, B to 0, 1, 2
-# and that digits/punctuation (0x21-0x3F) are unchanged from ASCII
+# Tests .encoding "screencodecommodore" maps @, lowercase, and uppercase
+# letters to their distinct glyph banks, preserving mixed case by default.
 
 [files]
 "main.asm" = '''
 .encoding "screencodecommodore"
-.text "@AB"
+.text "@aA"
 .text "2."
 '''
 
 [expect]
-rom = "00 01 02 32 2E"
+rom = "00 01 41 32 2E"

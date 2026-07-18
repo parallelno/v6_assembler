@@ -1,0 +1,14 @@
+# Tests Screencode case modes: mixed preserves case, lower and upper normalize it.
+
+[files]
+"main.asm" = '''
+.encoding "screencodecommodore", "mixed"
+.text "Aa"
+.encoding "screencodecommodore", "lower"
+.text "Aa"
+.encoding "screencodecommodore", "upper"
+.text "Aa"
+'''
+
+[expect]
+rom = "41 01 01 01 41 41"

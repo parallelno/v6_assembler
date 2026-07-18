@@ -379,14 +379,14 @@ Outputs `78 56 34 12 22 00 00 01 FF FF FF FF`.
 
 ## `.encoding`
 
-Selects how upcoming `.text` literals convert characters to bytes. Supported types are `"ascii"` (default) and `"screencodecommodore"`. The optional case argument accepts `"mixed"` (default), `"lower"`, or `"upper"`.
+Selects how upcoming `.text` literals convert characters to bytes. Supported types are `"ascii"` (default) and `"screencodecommodore"`. The optional case argument accepts `"mixed"` (default), `"lower"`, or `"upper"`: `"mixed"` leaves every character unchanged; `"lower"` converts `A` through `Z` to `a` through `z`; and `"upper"` converts `a` through `z` to `A` through `Z`. Non-alphabetic characters are unaffected.
 
 ```asm
 .encoding "ascii", "upper"
 .text "hello", 'w'           ; emits: 0x48, 0x45, 0x4C, 0x4C, 0x4F, 0x57
 
 .encoding "screencodecommodore"
-.text "@AB"                  ; emits: 0x00, 0x01, 0x02
+.text "@aA"                  ; emits: 0x00, 0x01, 0x41
 ```
 
 ## `.text`
