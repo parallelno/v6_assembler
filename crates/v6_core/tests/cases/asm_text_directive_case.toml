@@ -1,0 +1,10 @@
+# Tests uppercase and lowercase .text directive spellings preserve literal case
+
+[files]
+"main.asm" = '''
+.TEXT "UpPeR", 'X'
+.text "LoWeR", 'y'
+'''
+
+[expect]
+rom = "55 70 50 65 52 58 4C 6F 57 65 52 79"
