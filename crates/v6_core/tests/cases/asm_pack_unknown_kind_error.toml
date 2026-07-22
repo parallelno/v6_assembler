@@ -1,0 +1,13 @@
+# An unknown keyword after .pack is rejected at parse time.
+
+[files]
+"main.asm" = '''
+.org $0100
+.pack sideways
+label:
+    .storage 16
+.endpack
+'''
+
+[expect]
+error_contains = "Unknown .pack kind"

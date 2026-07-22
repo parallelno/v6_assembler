@@ -1,0 +1,13 @@
+# A .pack window block larger than 0x100 bytes is rejected.
+
+[files]
+"main.asm" = '''
+.org $0100
+.pack window
+big:
+    .storage 300
+.endpack
+'''
+
+[expect]
+error_contains = "must not exceed"

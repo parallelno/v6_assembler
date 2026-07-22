@@ -1,0 +1,12 @@
+# A .pack without a matching .endpack is reported.
+
+[files]
+"main.asm" = '''
+.org $0100
+.pack
+label:
+    .storage 16
+'''
+
+[expect]
+error_contains = "Missing .endpack"

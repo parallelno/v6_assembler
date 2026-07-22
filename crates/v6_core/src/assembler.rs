@@ -6,7 +6,7 @@ use crate::expr::{eval_expr, eval_expr_reloc, ByteOp, Expr, RelocValue, SymValue
 use crate::instructions::{encode_instruction, ParsedOperand};
 use crate::lexer::tokenize_line;
 use crate::object::section::{Reloc, RelocKind, Section};
-use crate::parser::{self, Directive, ParsedLine, PrintArg, TextItem};
+use crate::parser::{self, Directive, ParsedLine, PackKind, PrintArg, TextItem};
 use crate::preprocessor::{SourceLine, OriginalSource, expand_macro, parse_macro_invocation};
 use crate::project::CpuMode;
 use crate::symbols::SymbolTable;
@@ -226,6 +226,13 @@ pub struct Assembler {
     /// section entered via `.section`/`.optional` (object mode). 1 = none.
     pending_align: u32,
 
+    /// True once the `.pack` arena has been laid out in the current pass.
+    pack_laid_out: bool,
+    /// Absolute base address of the pack arena (ROM mode).
+    pack_arena_base: u16,
+    /// Total size of the pack arena in bytes.
+    pack_arena_size: u32,
+
     // Loop/if expansion depth tracking
     macro_depth: usize,
 }
@@ -260,6 +267,9 @@ impl Assembler {
             _optional_stack: Vec::new(),
             _optional_blocks: Vec::new(),
             pending_align: 1,
+            pack_laid_out: false,
+            pack_arena_base: 0,
+            pack_arena_size: 0,
             macro_depth: 0,
         }
     }
@@ -296,6 +306,9 @@ impl Assembler {
             self.obj = ObjectState::new();
         }
         self.pending_align = 1;
+        self.pack_laid_out = false;
+        self.pack_arena_base = 0;
+        self.pack_arena_size = 0;
     }
 
     fn pass1(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
@@ -371,9 +384,17 @@ impl Assembler {
                             i = end + 1;
                             continue;
                         }
+                        ControlDirective::Pack => {
+                            let end = self.find_matching_block_end(lines, i, BlockKind::Pack)?;
+                            self.ensure_pack_laid_out(lines)
+                                .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+                            i = end + 1;
+                            continue;
+                        }
                         ControlDirective::EndIf
                         | ControlDirective::EndLoop
-                        | ControlDirective::EndOptional => {
+                        | ControlDirective::EndOptional
+                        | ControlDirective::EndPack => {
                             i += 1;
                             continue;
                         }
@@ -582,6 +603,8 @@ impl Assembler {
             }
             Directive::Optional | Directive::EndOptional => {
             }
+            Directive::Pack(_) | Directive::EndPack => {
+            }
             Directive::IncBin { path, offset, length } => {
                 // For pass 1 we need to know the size
                 let resolved = self.resolve_file_path(path)?;
@@ -761,9 +784,35 @@ impl Assembler {
                             i = end + 1;
                             continue;
                         }
+                        ControlDirective::Pack => {
+                            let end = self.find_matching_block_end(lines, i, BlockKind::Pack)?;
+                            self.ensure_pack_laid_out(lines)
+                                .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+                            // Record the .pack and .endpack lines in the listing.
+                            self.listing_data.push(ListingLine {
+                                file: line.file.clone(),
+                                line_num: line.line_num,
+                                text: line.text.clone(),
+                                addr: self.pc,
+                                byte_count: 0,
+                                macro_expansion: line.macro_context.is_some(),
+                            });
+                            let end_line = &lines[end];
+                            self.listing_data.push(ListingLine {
+                                file: end_line.file.clone(),
+                                line_num: end_line.line_num,
+                                text: end_line.text.clone(),
+                                addr: self.pc,
+                                byte_count: 0,
+                                macro_expansion: end_line.macro_context.is_some(),
+                            });
+                            i = end + 1;
+                            continue;
+                        }
                         ControlDirective::EndIf
                         | ControlDirective::EndLoop
-                        | ControlDirective::EndOptional => {
+                        | ControlDirective::EndOptional
+                        | ControlDirective::EndPack => {
                             self.listing_data.push(ListingLine {
                                 file: line.file.clone(),
                                 line_num: line.line_num,
@@ -934,6 +983,8 @@ impl Assembler {
             ParsedLine::Directive(Directive::EndLoop) => Some(ControlDirective::EndLoop),
             ParsedLine::Directive(Directive::Optional) => Some(ControlDirective::Optional),
             ParsedLine::Directive(Directive::EndOptional) => Some(ControlDirective::EndOptional),
+            ParsedLine::Directive(Directive::Pack(_)) => Some(ControlDirective::Pack),
+            ParsedLine::Directive(Directive::EndPack) => Some(ControlDirective::EndPack),
             _ => None,
         }
     }
@@ -959,12 +1010,14 @@ impl Assembler {
                 match (kind, control) {
                     (BlockKind::If, ControlDirective::If(_))
                     | (BlockKind::Loop, ControlDirective::Loop(_))
-                    | (BlockKind::Optional, ControlDirective::Optional) => {
+                    | (BlockKind::Optional, ControlDirective::Optional)
+                    | (BlockKind::Pack, ControlDirective::Pack) => {
                         depth += 1;
                     }
                     (BlockKind::If, ControlDirective::EndIf)
                     | (BlockKind::Loop, ControlDirective::EndLoop)
-                    | (BlockKind::Optional, ControlDirective::EndOptional) => {
+                    | (BlockKind::Optional, ControlDirective::EndOptional)
+                    | (BlockKind::Pack, ControlDirective::EndPack) => {
                         depth -= 1;
                         if depth == 0 {
                             return Ok(idx);
@@ -1377,6 +1430,7 @@ impl Assembler {
             }
             Directive::If(_) | Directive::EndIf | Directive::Loop(_) | Directive::EndLoop => {}
             Directive::Optional | Directive::EndOptional => {}
+            Directive::Pack(_) | Directive::EndPack => {}
             Directive::Include(_) | Directive::MacroDef { .. } | Directive::EndMacro => {}
         }
         Ok(())
@@ -1641,6 +1695,196 @@ impl Assembler {
         }
     }
 
+    /// Collect, pack, reserve and assign addresses for every `.pack` block in
+    /// `lines`. Runs once per pass (guarded by `self.pack_laid_out`) the first
+    /// time a `.pack` directive is reached, so trailing content receives the
+    /// correct location counter. Pack blocks are runtime-only reservations: no
+    /// bytes are emitted; labels are defined at their packed addresses.
+    fn ensure_pack_laid_out(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
+        if self.pack_laid_out {
+            return Ok(());
+        }
+        self.pack_laid_out = true;
+
+        let blocks = self.collect_pack_blocks(lines)?;
+        if blocks.is_empty() {
+            return Ok(());
+        }
+
+        let (offsets, arena_size) = compute_pack_offsets(&blocks);
+
+        match self.output_format {
+            OutputFormat::Rom => {
+                let base = round_up_u32(self.pc as u32, PACK_DOMAIN) as u16;
+                for (bi, block) in blocks.iter().enumerate() {
+                    let block_base = base as u32 + offsets[bi];
+                    for lbl in &block.labels {
+                        let addr = (block_base + lbl.offset) as u16;
+                        if lbl.is_local {
+                            self.symbols.define_local_label(&lbl.name, addr, &block.file, block.line_num)?;
+                        } else {
+                            self.symbols.define_label(&lbl.name, addr, &block.file, block.line_num)?;
+                        }
+                    }
+                }
+                self.pack_arena_base = base;
+                self.pack_arena_size = arena_size;
+                // Reserve the whole arena so inline content after the first
+                // `.pack` resumes past it. No fill: the region is uninitialized.
+                self.pc = base.wrapping_add(arena_size as u16);
+            }
+            OutputFormat::Obj => {
+                let sec = self.obj.section_index(".bss.pack");
+                self.obj.sections[sec].set_align(PACK_DOMAIN);
+                let sec_base = self.obj.sections[sec].size;
+                for (bi, block) in blocks.iter().enumerate() {
+                    let block_base = sec_base + offsets[bi];
+                    for lbl in &block.labels {
+                        let off = (block_base + lbl.offset) as u16;
+                        if lbl.is_local {
+                            self.symbols.define_local_label_in(&lbl.name, off, Some(sec), &block.file, block.line_num)?;
+                        } else {
+                            self.symbols.define_label_in(&lbl.name, off, Some(sec), &block.file, block.line_num)?;
+                        }
+                    }
+                }
+                self.obj.sections[sec].reserve(arena_size);
+                self.pack_arena_size = arena_size;
+            }
+        }
+
+        // Constant definitions inside pack blocks are resolved after every pack
+        // label is known, so cross-references within the arena work.
+        for block in &blocks {
+            for c in &block.consts {
+                let resolver = |sym: &str| -> Option<i64> {
+                    self.symbols.resolve(sym).or_else(|| self.symbols.resolve_local(sym))
+                };
+                match eval_expr(&c.expr, &resolver, 0) {
+                    Ok(val) => {
+                        if c.is_local {
+                            self.symbols.define_local_constant(&c.name, val, &block.file, block.line_num)?;
+                        } else {
+                            self.symbols.define_constant(&c.name, val, &block.file, block.line_num)?;
+                        }
+                    }
+                    Err(_) => {
+                        if !c.is_local {
+                            self.symbols.define_constant_deferred(&c.name, c.expr.clone(), &block.file, block.line_num)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Scan `lines` for every `.pack`/`.endpack` block, validating and
+    /// measuring each. Returns the collected blocks in source order.
+    fn collect_pack_blocks(&self, lines: &[SourceLine]) -> AsmResult<Vec<PackBlockData>> {
+        let mut blocks = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = &lines[i];
+            let tokens = match tokenize_line(&line.text, &line.file, line.line_num) {
+                Ok(t) => t,
+                Err(_) => { i += 1; continue; }
+            };
+            if tokens.is_empty() { i += 1; continue; }
+            let parsed = match parser::parse_line(&tokens, self.cpu_mode) {
+                Ok(p) => p,
+                Err(_) => { i += 1; continue; }
+            };
+            let kind = if parsed.len() == 1 {
+                if let ParsedLine::Directive(Directive::Pack(k)) = &parsed[0] { Some(*k) } else { None }
+            } else { None };
+
+            if let Some(kind) = kind {
+                let end = self.find_matching_block_end(lines, i, BlockKind::Pack)?;
+                let block = self.collect_one_pack_block(lines, i, end, kind)?;
+                blocks.push(block);
+                i = end + 1;
+            } else {
+                i += 1;
+            }
+        }
+        Ok(blocks)
+    }
+
+    /// Collect and validate the body of a single pack block spanning lines
+    /// `start` (the `.pack`) .. `end` (the `.endpack`).
+    fn collect_one_pack_block(&self, lines: &[SourceLine], start: usize, end: usize, kind: PackKind) -> AsmResult<PackBlockData> {
+        let start_line = &lines[start];
+        let mut size: u32 = 0;
+        let mut labels: Vec<PackLabel> = Vec::new();
+        let mut consts: Vec<PackConst> = Vec::new();
+
+        for line in &lines[start + 1..end] {
+            let tokens = tokenize_line(&line.text, &line.file, line.line_num)
+                .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+            if tokens.is_empty() { continue; }
+            let parsed = parser::parse_line(&tokens, self.cpu_mode)
+                .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+            for item in &parsed {
+                match item {
+                    ParsedLine::Empty => {}
+                    ParsedLine::Label(name) => {
+                        labels.push(PackLabel { name: name.clone(), is_local: false, offset: size });
+                    }
+                    ParsedLine::LocalLabel(name) => {
+                        labels.push(PackLabel { name: name.clone(), is_local: true, offset: size });
+                    }
+                    ParsedLine::ConstDef { name, is_local, expr } => {
+                        consts.push(PackConst { name: name.clone(), is_local: *is_local, expr: expr.clone() });
+                    }
+                    ParsedLine::Directive(Directive::Storage { length, filler }) => {
+                        if filler.is_some() {
+                            return Err(AsmError::new(".storage inside .pack must not specify a filler")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        let len = self.eval_expr(length)
+                            .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
+                        if len < 0 {
+                            return Err(AsmError::new(".storage length must be non-negative")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        size += len as u32;
+                    }
+                    _ => {
+                        return Err(AsmError::new(
+                            "Only labels, constant assignments and .storage are allowed inside a .pack block")
+                            .ensure_location(&line.file, line.line_num));
+                    }
+                }
+            }
+        }
+
+        if labels.is_empty() {
+            return Err(AsmError::new("A .pack block must define at least one label")
+                .ensure_location(&start_line.file, start_line.line_num));
+        }
+        if size == 0 {
+            return Err(AsmError::new("A .pack block must reserve at least one byte")
+                .ensure_location(&start_line.file, start_line.line_num));
+        }
+        if kind == PackKind::Window && size > PACK_DOMAIN {
+            return Err(AsmError::new(format!(
+                ".pack window block is {} bytes but must not exceed {} bytes",
+                size, PACK_DOMAIN))
+                .ensure_location(&start_line.file, start_line.line_num));
+        }
+
+        Ok(PackBlockData {
+            kind,
+            size,
+            labels,
+            consts,
+            file: start_line.file.clone(),
+            line_num: start_line.line_num,
+        })
+    }
+
     /// Apply `.globl`/`.weak`/`.local` bindings, recording original-case names.
     fn apply_binding(&mut self, names: &[String], kind: BindingKind) {
         if self.output_format != OutputFormat::Obj {
@@ -1790,6 +2034,7 @@ enum BlockKind {
     If,
     Loop,
     Optional,
+    Pack,
 }
 
 #[derive(Clone, Copy)]
@@ -1805,6 +2050,7 @@ impl BlockKind {
             BlockKind::If => ".endif",
             BlockKind::Loop => ".endloop",
             BlockKind::Optional => ".endoptional",
+            BlockKind::Pack => ".endpack",
         }
     }
 }
@@ -1816,4 +2062,137 @@ enum ControlDirective<'a> {
     EndLoop,
     Optional,
     EndOptional,
+    Pack,
+    EndPack,
+}
+
+/// The 0x100-byte alignment/window domain used by `.pack` blocks.
+const PACK_DOMAIN: u32 = 0x100;
+
+/// A label defined inside a pack block, with its offset from the block start.
+struct PackLabel {
+    name: String,
+    is_local: bool,
+    offset: u32,
+}
+
+/// A constant assignment appearing inside a pack block.
+struct PackConst {
+    name: String,
+    is_local: bool,
+    expr: Expr,
+}
+
+/// A collected, measured pack block.
+struct PackBlockData {
+    kind: PackKind,
+    size: u32,
+    labels: Vec<PackLabel>,
+    consts: Vec<PackConst>,
+    file: String,
+    line_num: usize,
+}
+
+fn round_up_u32(x: u32, m: u32) -> u32 {
+    ((x + m - 1) / m) * m
+}
+
+/// True when a block of `size` bytes placed at `pos` would cross a
+/// `PACK_DOMAIN` boundary.
+fn pack_straddles(pos: u32, size: u32) -> bool {
+    size != 0 && (pos / PACK_DOMAIN) != ((pos + size - 1) / PACK_DOMAIN)
+}
+
+/// Try to place a block of `size` bytes in the hole `[hs, he)`. For windows the
+/// placement must not straddle a `PACK_DOMAIN` boundary. Returns the chosen
+/// position on success.
+fn fit_in_hole(hs: u32, he: u32, size: u32, is_window: bool) -> Option<u32> {
+    if he - hs < size {
+        return None;
+    }
+    if !is_window || !pack_straddles(hs, size) {
+        return Some(hs);
+    }
+    let p = round_up_u32(hs, PACK_DOMAIN);
+    if p + size <= he { Some(p) } else { None }
+}
+
+/// Compute packed offsets for every block. Mirrors `temp/pack/pack.py`:
+/// align anchors are laid out first in descending-size order (rounding the
+/// cursor to `PACK_DOMAIN`, turning skipped ranges into holes); windows are
+/// then placed (descending size, best-fit, non-straddling) followed by fillers.
+/// When an appended window bumps past a boundary the skipped bytes are
+/// registered as a hole so later blocks can reuse them. Returns per-block
+/// offsets (in source order) and the total arena size.
+fn compute_pack_offsets(blocks: &[PackBlockData]) -> (Vec<u32>, u32) {
+    let n = blocks.len();
+    let mut offsets = vec![0u32; n];
+    let mut holes: Vec<(u32, u32)> = Vec::new();
+
+    let size_desc = |a: &usize, b: &usize| {
+        blocks[*b].size.cmp(&blocks[*a].size).then(a.cmp(b))
+    };
+
+    // 1) Anchors (align) skeleton, descending size.
+    let mut anchors: Vec<usize> = (0..n).filter(|&i| blocks[i].kind == PackKind::Align).collect();
+    anchors.sort_by(size_desc);
+    let mut cursor = 0u32;
+    for &i in &anchors {
+        let start = round_up_u32(cursor, PACK_DOMAIN);
+        if start > cursor {
+            holes.push((cursor, start));
+        }
+        offsets[i] = start;
+        cursor = start + blocks[i].size;
+    }
+    let mut append_cursor = cursor;
+
+    // 2) Fill order: windows (desc) then fillers (desc).
+    let mut windows: Vec<usize> = (0..n).filter(|&i| blocks[i].kind == PackKind::Window).collect();
+    windows.sort_by(size_desc);
+    let mut fillers: Vec<usize> = (0..n).filter(|&i| blocks[i].kind == PackKind::Filler).collect();
+    fillers.sort_by(size_desc);
+    let fill: Vec<usize> = windows.into_iter().chain(fillers).collect();
+
+    for &i in &fill {
+        let size = blocks[i].size;
+        let is_window = blocks[i].kind == PackKind::Window;
+
+        // Best-fit: smallest hole that can accommodate the block.
+        let mut best: Option<(usize, u32, u32)> = None; // (hole idx, pos, room)
+        for (hi, &(hs, he)) in holes.iter().enumerate() {
+            if let Some(pos) = fit_in_hole(hs, he, size, is_window) {
+                let room = he - hs;
+                if best.map_or(true, |(_, _, br)| room < br) {
+                    best = Some((hi, pos, room));
+                }
+            }
+        }
+
+        if let Some((hi, pos, _)) = best {
+            let (hs, he) = holes.remove(hi);
+            if pos > hs {
+                holes.push((hs, pos));
+            }
+            if pos + size < he {
+                holes.push((pos + size, he));
+            }
+            holes.sort();
+            offsets[i] = pos;
+        } else {
+            let mut pos = append_cursor;
+            if is_window && pack_straddles(pos, size) {
+                let newpos = round_up_u32(pos, PACK_DOMAIN);
+                if newpos > append_cursor {
+                    holes.push((append_cursor, newpos));
+                    holes.sort();
+                }
+                pos = newpos;
+            }
+            offsets[i] = pos;
+            append_cursor = pos + size;
+        }
+    }
+
+    (offsets, append_cursor.max(cursor))
 }

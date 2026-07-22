@@ -1,0 +1,22 @@
+# A simple .pack block: a single anchor aligns to 0x100 and reserves its size.
+
+[files]
+"main.asm" = '''
+.org $0100
+start:
+    .byte 1
+.pack align
+table:
+    .storage 16
+.endpack
+after:
+    .byte 2
+'''
+
+[expect]
+# start at $0100 (byte 1), arena anchored at $0200 (rounded up), 16 bytes,
+# after at $0210.
+[expect.symbols]
+start = 256
+table = 512
+after = 528

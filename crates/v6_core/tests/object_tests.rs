@@ -546,6 +546,107 @@ fn org_is_rejected_in_object_mode() {
     );
 }
 
+// ── .pack blocks ─────────────────────────────────────────────────────────────
+
+#[test]
+fn pack_blocks_go_into_bss_pack_nobits_section() {
+    use v6_core::object::section::SHT_NOBITS;
+    // Two anchors + one filler; the arena is a single NOBITS `.bss.pack`
+    // section aligned to 0x100, sized to the packed total.
+    let asm = assemble_obj(
+        ".pack align\n\
+         a:\n\
+         .storage 256\n\
+         .endpack\n\
+         .pack align\n\
+         b:\n\
+         .storage 256\n\
+         .endpack\n\
+         .pack\n\
+         c:\n\
+         .storage 16\n\
+         .endpack\n",
+    )
+    .unwrap();
+
+    let sec_idx = asm
+        .obj
+        .sections
+        .iter()
+        .position(|s| s.name == ".bss.pack")
+        .expect("expected a .bss.pack section");
+    let sec = &asm.obj.sections[sec_idx];
+    assert_eq!(sec.sh_type, SHT_NOBITS);
+    assert!(sec.is_nobits());
+    assert!(sec.bytes.is_empty());
+    assert_eq!(sec.addralign, 256);
+    // 256 + 256 + 16 = 528 bytes, no padding needed (filler fits after).
+    assert_eq!(sec.size, 528);
+
+    // Labels are section-relative offsets within `.bss.pack`.
+    let a = asm.symbols.get_global_info("a").unwrap();
+    let b = asm.symbols.get_global_info("b").unwrap();
+    let c = asm.symbols.get_global_info("c").unwrap();
+    assert_eq!(a.section, Some(sec_idx));
+    assert_eq!(b.section, Some(sec_idx));
+    assert_eq!(c.section, Some(sec_idx));
+    assert_eq!(a.value, Some(0));
+    assert_eq!(b.value, Some(256));
+    assert_eq!(c.value, Some(512));
+}
+
+#[test]
+fn pack_dataset_obj_matches_layout() {
+    // The full runtime dataset (temp/pack/pack.py) packs to a 0xCA0-byte arena
+    // in a `.bss.pack` NOBITS section; spot-check a few packed offsets.
+    let asm = assemble_obj(
+        ".pack window\nhero_resources:\n.storage 17\n.endpack\n\
+         .pack\nos_io_data:\n.storage 17\n.endpack\n\
+         .pack\nswitch_statuses:\n.storage 2\n.endpack\n\
+         .pack\nglobal_states:\n.storage 10\n.endpack\n\
+         .pack\nchars_runtime_data:\n.storage 482\n.endpack\n\
+         .pack window\noverlays_runtime_data:\n.storage 227\n.endpack\n\
+         .pack\nactor_data_head_ptr:\n.storage 2\n.endpack\n\
+         .pack\nlv_data_init_tbl:\n.storage 14\n.endpack\n\
+         .pack\nroom_tiledata_backup:\n.storage 240\n.endpack\n\
+         .pack\ntemp_buff:\n.storage 512\n.endpack\n\
+         .pack\nroom_teleports_data:\n.storage 16\n.endpack\n\
+         .pack\ngame_status:\n.storage 16\n.endpack\n\
+         .pack\nroom_tiles_gfx_ptrs:\n.storage 480\n.endpack\n\
+         .pack align\nroom_tiledata:\n.storage 240\n.endpack\n\
+         .pack\npalette:\n.storage 16\n.endpack\n\
+         .pack align\ncontainers_inst_data_ptrs:\n.storage 256\n.endpack\n\
+         .pack align\nresources_inst_data_ptrs:\n.storage 256\n.endpack\n\
+         .pack align\nbreakables_status:\n.storage 256\n.endpack\n\
+         .pack window\nbacks_runtime_data:\n.storage 62\n.endpack\n\
+         .pack\nhero_runtime_data:\n.storage 31\n.endpack\n\
+         .pack window\nrooms_spawn_rate:\n.storage 64\n.endpack\n\
+         .pack\nglobal_items:\n.storage 15\n.endpack\n\
+         .pack\nram_disk_mode:\n.storage 1\n.endpack\n",
+    )
+    .unwrap();
+
+    let sec_idx = asm
+        .obj
+        .sections
+        .iter()
+        .position(|s| s.name == ".bss.pack")
+        .expect("expected a .bss.pack section");
+    assert_eq!(asm.obj.sections[sec_idx].size, 0xCA0);
+    assert_eq!(asm.obj.sections[sec_idx].addralign, 256);
+
+    let off = |name: &str| asm.symbols.get_global_info(name).unwrap().value.unwrap();
+    assert_eq!(off("containers_inst_data_ptrs"), 0x000);
+    assert_eq!(off("resources_inst_data_ptrs"), 0x100);
+    assert_eq!(off("breakables_status"), 0x200);
+    assert_eq!(off("room_tiledata"), 0x300);
+    assert_eq!(off("room_teleports_data"), 0x3F0);
+    assert_eq!(off("overlays_runtime_data"), 0x400);
+    assert_eq!(off("hero_resources"), 0x4E3);
+    assert_eq!(off("rooms_spawn_rate"), 0x500);
+    assert_eq!(off("ram_disk_mode"), 0xC9F);
+}
+
 // ── ELF serialization ────────────────────────────────────────────────────────
 
 fn read_u16(b: &[u8], off: usize) -> u16 {

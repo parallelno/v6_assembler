@@ -1,0 +1,13 @@
+# Instructions and other emitting content are not allowed inside a .pack block.
+
+[files]
+"main.asm" = '''
+.org $0100
+.pack
+label:
+    nop
+.endpack
+'''
+
+[expect]
+error_contains = "allowed inside a .pack"

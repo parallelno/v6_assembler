@@ -76,6 +76,41 @@ placed immediately before a `.section` or `.optional` directive propagates to
 the section that directive creates. This lets a generated section (such as a
 page-aligned buffer) carry the alignment the linker must honor.
 
+### `.pack` blocks
+
+`.pack` / `.endpack` blocks are runtime-only storage blocks. In object mode
+they are collected into a single `.bss.pack` section with these properties:
+
+| Property | Value |
+|----------|-------|
+| Type | `SHT_NOBITS` |
+| Flags | `SHF_ALLOC | SHF_WRITE` |
+| Alignment | 256 bytes |
+| File contents | None; only runtime size is reserved |
+
+The section is created implicitly and is placed by the linker with the other
+`.bss` sections. Its internal offsets are already packed by v6asm: `.pack
+align` labels start on 256-byte boundaries, `.pack window` blocks do not cross
+one, and plain `.pack` blocks fill remaining holes. Packing is performed per
+object; the linker concatenates `.bss.pack` input sections and does not repack
+across object files.
+
+For example:
+
+```asm
+.pack align
+page_table:
+  .storage 240
+.endpack
+
+.pack window
+small_runtime_data:
+  .storage 32
+.endpack
+```
+
+Use `llvm-readelf -S module.o` to inspect the resulting `.bss.pack` section.
+
 
 ### `.optional` blocks become sections
 

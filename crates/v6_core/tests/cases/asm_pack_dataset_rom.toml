@@ -1,0 +1,135 @@
+# Packs the real runtime dataset (temp/pack/pack.py) and checks every block is
+# placed at the expected packed address. Arena base is $8000 (first .pack,
+# already 0x100-aligned); addresses are base + arena-relative offset from
+# temp/pack/pack_layout.txt. Total arena is 0xCA0 bytes -> after_arena = $8CA0.
+
+[files]
+"main.asm" = '''
+.org $8000
+
+.pack window
+hero_resources:
+    .storage 17
+.endpack
+.pack
+os_io_data:
+    .storage 17
+.endpack
+.pack
+switch_statuses:
+    .storage 2
+.endpack
+.pack
+global_states:
+    .storage 10
+.endpack
+.pack
+chars_runtime_data:
+    .storage 482
+.endpack
+.pack window
+overlays_runtime_data:
+    .storage 227
+.endpack
+.pack
+actor_data_head_ptr:
+    .storage 2
+.endpack
+.pack
+lv_data_init_tbl:
+    .storage 14
+.endpack
+.pack
+room_tiledata_backup:
+    .storage 240
+.endpack
+.pack
+temp_buff:
+    .storage 512
+.endpack
+.pack
+room_teleports_data:
+    .storage 16
+.endpack
+.pack
+game_status:
+    .storage 16
+.endpack
+.pack
+room_tiles_gfx_ptrs:
+    .storage 480
+.endpack
+.pack align
+room_tiledata:
+    .storage 240
+.endpack
+.pack
+palette:
+    .storage 16
+.endpack
+.pack align
+containers_inst_data_ptrs:
+    .storage 256
+.endpack
+.pack align
+resources_inst_data_ptrs:
+    .storage 256
+.endpack
+.pack align
+breakables_status:
+    .storage 256
+.endpack
+.pack window
+backs_runtime_data:
+    .storage 62
+.endpack
+.pack
+hero_runtime_data:
+    .storage 31
+.endpack
+.pack window
+rooms_spawn_rate:
+    .storage 64
+.endpack
+.pack
+global_items:
+    .storage 15
+.endpack
+.pack
+ram_disk_mode:
+    .storage 1
+.endpack
+
+after_arena:
+    .byte $AA
+'''
+
+[expect]
+rom = "AA"
+min_addr = "8CA0"
+
+[expect.symbols]
+containers_inst_data_ptrs = 32768
+resources_inst_data_ptrs = 33024
+breakables_status = 33280
+room_tiledata = 33536
+room_teleports_data = 33776
+overlays_runtime_data = 33792
+hero_resources = 34019
+global_states = 34036
+switch_statuses = 34046
+rooms_spawn_rate = 34048
+backs_runtime_data = 34112
+temp_buff = 34174
+chars_runtime_data = 34686
+room_tiles_gfx_ptrs = 35168
+room_tiledata_backup = 35648
+hero_runtime_data = 35888
+os_io_data = 35919
+game_status = 35936
+palette = 35952
+global_items = 35968
+lv_data_init_tbl = 35983
+actor_data_head_ptr = 35997
+ram_disk_mode = 35999
+after_arena = 36000

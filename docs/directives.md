@@ -345,6 +345,49 @@ table:    .storage 4, 0x7E     ; emits 0x7E 0x7E 0x7E 0x7E
 after:    .db 0xAA              ; assembled after the reserved space
 ```
 
+## `.pack` / `.endpack`
+
+Collects runtime-only storage blocks into one tightly packed arena. A pack
+block may contain labels, constant assignments, and `.storage <length>`
+reservations without a filler. It may not contain instructions, initialized
+data, `.align`, `.org`, section switches, `.optional`, or another `.pack`.
+Every block must define at least one label and reserve at least one byte.
+
+The optional keyword selects the placement rule:
+
+| Directive | Placement |
+|-----------|-----------|
+| `.pack` | Filler block; may be placed anywhere and may cross a 256-byte boundary. |
+| `.pack align` | Anchor block; starts at a 256-byte boundary. |
+| `.pack window` | Windowed block; must fit entirely within one 256-byte page. Its length must be no greater than 256 bytes. |
+
+```asm
+.pack align
+room_tiledata:
+  .storage 240
+.endpack
+
+.pack window
+hero_resources:
+  .storage 17
+.endpack
+
+.pack
+runtime_flags:
+  .storage 16
+.endpack
+```
+
+Blocks are reordered by the assembler, so references must use labels rather
+than relying on source order. Anchors form the aligned skeleton; windowed
+blocks are then placed before filler blocks, using available holes first.
+
+In ROM mode the arena is reserved at the first `.pack` position, rounded up
+to a 256-byte boundary, and later inline content resumes after the arena. In
+object mode all pack blocks are placed in one `.bss.pack` NOBITS section with
+256-byte alignment. The section reserves runtime space but contributes no file
+bytes. See [Object Output](object-output.md) for the object-mode section model.
+
 ## Data Emission
 
 ### `.byte` / `DB`

@@ -46,17 +46,28 @@ tightly — see the efficiency study below.
 ### One collected arena
 
 - **Object mode:** all `.pack` blocks collect into a single implicitly-created
-  section named **`.pack`**, `SHT_NOBITS`, `SHF_ALLOC | SHF_WRITE`,
-  `sh_addralign = 0x100` (reuse `Section::set_align`). It occupies **no file
-  bytes**; `ld.lld` places it on a 0x100 boundary as one unit, preserving every
-  internal offset — so each `align` block lands on a page boundary and each
-  `window` block stays within one page. (Equivalently the section could be named
-  `.bss.pack` to inherit NOBITS + alloc/write from `default_type`/`default_flags`;
-  final name TBD, semantics identical.)
+  section named **`.bss.pack`**, `SHT_NOBITS`, `SHF_ALLOC | SHF_WRITE`,
+  `sh_addralign = 0x100`. The `.bss.*` name makes the section inherit NOBITS +
+  alloc/write from `default_type`/`default_flags` and be routed by the standard
+  linker-script rule `*(.bss .bss.* ...)` into the RAM/BSS region with no custom
+  script. It occupies **no file bytes**; `ld.lld` places it on a 0x100 boundary
+  as one unit, preserving every internal offset — so each `align` block lands on
+  a page boundary and each `window` block stays within one page.
 - **ROM mode:** no sections — the arena is one contiguous **reserved** region
   placed at the location of the **first `.pack` block in source order**, rounded
   up to 0x100. It reserves address space (advances the location counter) without
   emitting initialized bytes. Subsequent inline content resumes after the arena.
+
+### Multiple objects (obj mode)
+
+The `.bss.pack` section is shared **in name only**. The linker never re-packs
+across objects — it **concatenates input sections**: each object's `.bss.pack`
+contribution is placed as one atomic 0x100-aligned unit, in link order, with up
+to 255 bytes of inter-object padding to re-align each to a page boundary. So
+packing is **per-object**; each object's internal layout (anchors on boundaries,
+windows within a page) is preserved because every object's arena base is
+0x100-aligned. Cross-object holes are not filled — that stays a non-goal. For
+this workload all packed RAM lives in one object, so the padding cost is zero.
 
 ### Reordering is expected
 
@@ -90,19 +101,26 @@ Per compilation unit (no cross-object packing). Domain = 0x100; the arena base i
 0x100-aligned, so arena-relative offsets translate to correctly aligned/paged
 absolute addresses.
 
-1. **Skeleton (anchors).** Place `align` blocks in source order. Keep a `cursor`
-   (arena-relative, from 0). For each anchor, round `cursor` up to 0x100; the
-   skipped range becomes an open **hole**; place the block; advance `cursor`.
-2. **Fill (fillers + windowed).** Take the `filler` and `window` blocks sorted by
-   **size descending** (tie-break: source order). For each, pick the **best-fit
-   hole** — the smallest hole it fits — honoring the constraint:
+1. **Skeleton (anchors).** Place `align` blocks in **descending size order**.
+   Keep a `cursor` (arena-relative, from 0). For each anchor, round `cursor` up
+   to 0x100; the skipped range becomes an open **hole**; place the block;
+   advance `cursor`. Ordering large anchors first keeps the smallest anchor last
+   (unrounded), so its trailing padding is never forced into a hole.
+2. **Fill — windows first (most-constrained-first).** Fill in two size-descending
+   passes (tie-break: source order): first the `window` blocks, then the
+   `filler` blocks. Windows have the tighter constraint and must get first pick
+   of the scarce non-straddling positions; fillers then mop up everything —
+   including the page-crossing regions windows can never use. For each block pick
+   the **best-fit hole** (smallest hole it fits):
    - `filler`: fits if `size ≤ hole`; placed at the hole front.
    - `window`: must land without crossing a 0x100 boundary — try the hole front;
      if that would straddle, try the next 0x100 boundary inside the hole; else
      the hole doesn't fit.
 
-   If no hole fits, append after the skeleton (`window` blocks bump to the next
-   0x100 boundary there if needed to avoid straddling).
+   If no hole fits, append after the skeleton. A `window` block bumps to the
+   next 0x100 boundary there if needed to avoid straddling; the bytes it skips
+   are **registered as a new hole** so later (smaller) blocks can still fill them
+   instead of leaking waste to the end of the arena.
 3. `arena_size` = final append cursor. Remaining hole bytes are unused space (in
    a NOBITS section they cost nothing in the file, only address range).
 
@@ -113,18 +131,21 @@ Every block gets an arena-relative offset; each interior label gets
 
 Because blocks only reserve space:
 
-1. **Pass 1 / collection.** For each `.pack` block, record its source range,
-   kind, reserved **size**, and each label's offset within the block. Run all
-   validations here. Do not assign inline addresses to pack labels.
-2. **Layout.** After pass 1, run the packer → per-block arena offset and
-   `arena_size`.
+1. **Collection.** At the first `.pack` encountered in each assembler pass,
+  scan all source lines for every `.pack` block. Record each block's source
+  range, kind, reserved **size**, and each label's offset within the block.
+  Run all validations here. Do not assign inline addresses to pack labels.
+2. **Layout.** Run the packer immediately after collection → per-block arena
+  offset and `arena_size`. This lets pass 1 reserve the complete arena before
+  processing inline content that follows the first `.pack` block.
 3. **Address assignment.** Define every pack-block label at its packed address:
    - ROM: `arena_addr + offset`, where `arena_addr = align_up(pc_at_first_pack,
      0x100)`.
-   - Obj: section `.pack`, section-relative `offset`.
+   - Obj: section `.bss.pack`, section-relative `offset`.
 4. **Reservation.** ROM: reserve `arena_size` at `arena_addr` so later inline
-   content doesn't overlap. Obj: grow the `.pack` NOBITS section by `arena_size`
-   (no bytes written). No pass-2 body replay, no relocation handling.
+   content doesn't overlap. Obj: grow the `.bss.pack` NOBITS section by
+   `arena_size` (no bytes written). No pass-2 body replay, no relocation
+   handling.
 
 ## Relevant existing code
 
@@ -155,25 +176,38 @@ Because blocks only reserve space:
 3. **Collection/validation**: gather `PackBlock { kind, size, labels:
    Vec<(name, offset)> }`; emit the no-label, empty, window>0x100, and
    forbidden-content errors.
-4. **Packer**: best-fit-decreasing with the `align`/`window`/`filler` rules above
+4. **Packer**: descending-size skeleton of anchors, then two best-fit passes
+   (windows first, then fillers) with the `align`/`window`/`filler` rules above
    → arena offsets and `arena_size`.
 5. **Address assignment + reservation**: define pack labels at packed addresses;
-   reserve `arena_size` (ROM at the first-`.pack` anchor; obj in the `.pack`
+   reserve `arena_size` (ROM at the first-`.pack` anchor; obj in the `.bss.pack`
    NOBITS section).
 6. **Listing**: record `.pack` / `.endpack` lines like the `.optional` arms.
 
 ## Efficiency study (temp/pack/pack.py)
 
 Using the 23 real blocks from `temp/pack/runtime_data.asm` (3232 data bytes;
-4 `align`, 4 `window`, 15 `filler`):
+4 `align`, 4 `window`, 15 `filler`; theoretical minimum = 3232):
 
 | model | arena | waste | efficiency |
 |-------|-------|-------|------------|
-| `window` treated as `align` (no window type) | 3570 | 338 | 90.5% |
-| **with `window` type (this plan)**           | 3339 | 107 | **96.8%** |
+| no `window` type (`window` treated as `align`)          | 3570 | 338 | 90.5% |
+| `window` type, source anchors, combined fill (early)    | 3339 | 107 | 96.8% |
+| **`window` type, descending anchors, windows-first**    | 3232 |   0 | **100%** |
 
-The `window` type recovers 231 bytes on this dataset — decisive for fitting the
-RAM budget — which is why it is included.
+Three cumulative wins:
+- **`window` type** recovers the bulk (231 bytes vs. the no-window model).
+- **windows-first fill** (most-constrained-first) gives windows first pick of the
+  scarce non-straddling positions.
+- **append-bump holes**: when an appended `window` is bumped to the next page
+  boundary, the skipped bytes are registered as a hole and filled by later small
+  blocks. On this dataset these three together reach the theoretical minimum
+  (zero waste). See `temp/pack/pack_layout.txt` for the full packed address
+  table.
+
+Descending-anchor ordering is used for robustness in the worst case (few
+fillers): keeping the smallest anchor last avoids turning its trailing padding
+into a forced hole.
 
 ## Tests
 
@@ -189,11 +223,11 @@ RAM budget — which is why it is included.
   nested `.pack`.
 
 `object_tests.rs` (obj):
-- All `.pack` blocks land in one `.pack` section: `SHT_NOBITS`,
+- All `.pack` blocks land in one `.bss.pack` section: `SHT_NOBITS`,
   `SHF_ALLOC | SHF_WRITE`, `sh_addralign = 0x100`, zero file bytes.
 - `align` label at a 0x100-multiple offset; `window` label within one page;
   filler label anywhere.
-- `llvm-readelf -S out.o` shows `.pack` as NOBITS with `Align = 256`.
+- `llvm-readelf -S out.o` shows `.bss.pack` as NOBITS with `Align = 256`.
 
 ## Verification
 
@@ -201,7 +235,7 @@ RAM budget — which is why it is included.
 - ROM: assemble a runtime-data file using `.pack` / `.pack align` / `.pack
   window`; inspect the `.lst` to confirm holes are filled, anchors on boundaries,
   and no `window` block straddles a page.
-- Obj: `llvm-readelf -S` shows the NOBITS aligned `.pack` section.
+- Obj: `llvm-readelf -S` shows the NOBITS aligned `.bss.pack` section.
 
 ## Non-goals
 

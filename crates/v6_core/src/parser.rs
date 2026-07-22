@@ -37,6 +37,17 @@ pub enum ParsedLine {
     },
 }
 
+/// The kind of `.pack` block, selected by an optional keyword after `.pack`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackKind {
+    /// Plain filler block; may be placed anywhere it fits.
+    Filler,
+    /// Anchor block aligned to a 0x100 boundary.
+    Align,
+    /// Block that must not straddle a 0x100 boundary.
+    Window,
+}
+
 #[derive(Debug)]
 pub enum Directive {
     Org(Expr),
@@ -51,6 +62,10 @@ pub enum Directive {
     EndLoop,
     Optional,
     EndOptional,
+    /// Open a `.pack` block collecting runtime-only reserve blocks.
+    Pack(PackKind),
+    /// Close a `.pack` block.
+    EndPack,
     Setting(Vec<(String, String)>),
     Align(Expr),
     Storage { length: Expr, filler: Option<Expr> },
@@ -372,6 +387,27 @@ fn parse_directive(name: &str, tokens: &[LocatedToken], pos: &mut usize) -> AsmR
         "ENDLOOP" | "ENDL" => Ok(Directive::EndLoop),
         "OPTIONAL" | "OPT" | "FUNCTION" | "FUNC" => Ok(Directive::Optional),
         "ENDOPTIONAL" | "ENDOPT" | "ENDFUNCTION" | "ENDFUNC" => Ok(Directive::EndOptional),
+        "PACK" => {
+            let kind = match tokens.get(*pos).map(|t| &t.value) {
+                Some(Token::Identifier(kw)) => {
+                    let k = match kw.to_uppercase().as_str() {
+                        "ALIGN" => PackKind::Align,
+                        "WINDOW" => PackKind::Window,
+                        other => {
+                            return Err(AsmError::new(format!(
+                                "Unknown .pack kind '{}' (expected 'align' or 'window')",
+                                other
+                            )));
+                        }
+                    };
+                    *pos += 1;
+                    k
+                }
+                _ => PackKind::Filler,
+            };
+            Ok(Directive::Pack(kind))
+        }
+        "ENDPACK" => Ok(Directive::EndPack),
         "SETTING" => {
             let mut pairs = Vec::new();
             while *pos < tokens.len() {
