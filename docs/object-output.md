@@ -54,6 +54,18 @@ Each section has its own section-relative location counter starting at 0; the
 linker assigns the final base addresses. `.bss` (and any `SHT_NOBITS` section)
 reserves space via `.storage` but stores no bytes in the file.
 
+The active section is **stateful**: everything (code, `.storage`, `.byte`,
+`.align`, labels, …) flows into whichever section was last selected, and stays
+there until the next section directive. Consequences:
+
+- If the source never uses a section directive, the **entire unit is a single
+  `.text` section** — the default one created at startup.
+- Selecting a section that already exists **resumes and appends** to it; it does
+  not create a second section of the same name. So switching to `.data` and
+  later back to `.text` continues the original `.text` section.
+- `.align` and `.storage` never switch sections; they act on the current active
+  section only.
+
 `.org` is **rejected** in object mode — absolute placement is the linker's job.
 
 ### Section alignment

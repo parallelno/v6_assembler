@@ -429,6 +429,8 @@ buffer:   .storage 64       ; reserves space, occupies no file bytes
 
 Note: a bare `.text` switches sections, while `.text "..."` (with operands) is the string-emitting directive described above. `.section` accepts an optional `,"flags",@type` suffix for GNU-assembler compatibility; it is parsed and ignored (flags/type are inferred from the name).
 
+The active section is stateful: content flows into the most recently selected section until the next switch. With no section directive the whole unit stays in the default `.text`, and re-selecting an existing section resumes and appends to it rather than creating a new one.
+
 ### `.globl` / `.global`
 
 Mark one or more symbols as global (externally visible). Global symbols are exported in the object's symbol table so the linker can resolve references from other objects.
