@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
@@ -1715,6 +1716,7 @@ impl Assembler {
 
         let (offsets, arena_size) = compute_pack_offsets(&blocks);
 
+        let mut pack_scopes = HashMap::new();
         match self.output_format {
             OutputFormat::Rom => {
                 let base = round_up_u32(self.pc as u32, PACK_DOMAIN) as u16;
@@ -1726,6 +1728,7 @@ impl Assembler {
                             self.symbols.define_local_label(&lbl.name, addr, &block.file, block.line_num)?;
                         } else {
                             self.symbols.define_label(&lbl.name, addr, &block.file, block.line_num)?;
+                            pack_scopes.insert(lbl.name.to_uppercase(), self.symbols.current_scope());
                         }
                     }
                 }
@@ -1747,6 +1750,7 @@ impl Assembler {
                             self.symbols.define_local_label_in(&lbl.name, off, Some(sec), &block.file, block.line_num)?;
                         } else {
                             self.symbols.define_label_in(&lbl.name, off, Some(sec), &block.file, block.line_num)?;
+                            pack_scopes.insert(lbl.name.to_uppercase(), self.symbols.current_scope());
                         }
                     }
                 }
@@ -1759,20 +1763,27 @@ impl Assembler {
         // label is known, so cross-references within the arena work.
         for block in &blocks {
             for c in &block.consts {
+                let local_scope = c.scope_label.as_ref()
+                    .and_then(|name| pack_scopes.get(&name.to_uppercase()))
+                    .copied();
                 let resolver = |sym: &str| -> Option<i64> {
-                    self.symbols.resolve(sym).or_else(|| self.symbols.resolve_local(sym))
+                    self.symbols.resolve(sym).or_else(|| {
+                        local_scope
+                            .and_then(|scope| self.symbols.resolve_local_in_scope(sym, scope))
+                            .or_else(|| self.symbols.resolve_local(sym))
+                    })
                 };
                 match eval_expr(&c.expr, &resolver, 0) {
                     Ok(val) => {
                         if c.is_local {
-                            self.symbols.define_local_constant(&c.name, val, &block.file, block.line_num)?;
+                            self.symbols.define_local_constant(&c.name, val, &c.file, c.line_num)?;
                         } else {
-                            self.symbols.define_constant(&c.name, val, &block.file, block.line_num)?;
+                            self.symbols.define_constant(&c.name, val, &c.file, c.line_num)?;
                         }
                     }
                     Err(_) => {
                         if !c.is_local {
-                            self.symbols.define_constant_deferred(&c.name, c.expr.clone(), &block.file, block.line_num)?;
+                            self.symbols.define_constant_deferred(&c.name, c.expr.clone(), &c.file, c.line_num)?;
                         }
                     }
                 }
@@ -1784,7 +1795,7 @@ impl Assembler {
 
     /// Scan `lines` for every `.pack`/`.endpack` block, validating and
     /// measuring each. Returns the collected blocks in source order.
-    fn collect_pack_blocks(&self, lines: &[SourceLine]) -> AsmResult<Vec<PackBlockData>> {
+    fn collect_pack_blocks(&mut self, lines: &[SourceLine]) -> AsmResult<Vec<PackBlockData>> {
         let mut blocks = Vec::new();
         let mut i = 0;
         while i < lines.len() {
@@ -1816,11 +1827,12 @@ impl Assembler {
 
     /// Collect and validate the body of a single pack block spanning lines
     /// `start` (the `.pack`) .. `end` (the `.endpack`).
-    fn collect_one_pack_block(&self, lines: &[SourceLine], start: usize, end: usize, kind: PackKind) -> AsmResult<PackBlockData> {
+    fn collect_one_pack_block(&mut self, lines: &[SourceLine], start: usize, end: usize, kind: PackKind) -> AsmResult<PackBlockData> {
         let start_line = &lines[start];
         let mut size: u32 = 0;
         let mut labels: Vec<PackLabel> = Vec::new();
         let mut consts: Vec<PackConst> = Vec::new();
+        let mut current_global_label: Option<String> = None;
 
         for line in &lines[start + 1..end] {
             let tokens = tokenize_line(&line.text, &line.file, line.line_num)
@@ -1833,12 +1845,30 @@ impl Assembler {
                     ParsedLine::Empty => {}
                     ParsedLine::Label(name) => {
                         labels.push(PackLabel { name: name.clone(), is_local: false, offset: size });
+                        current_global_label = Some(name.clone());
                     }
                     ParsedLine::LocalLabel(name) => {
                         labels.push(PackLabel { name: name.clone(), is_local: true, offset: size });
                     }
                     ParsedLine::ConstDef { name, is_local, expr } => {
-                        consts.push(PackConst { name: name.clone(), is_local: *is_local, expr: expr.clone() });
+                        consts.push(PackConst {
+                            name: name.clone(),
+                            is_local: *is_local,
+                            expr: expr.clone(),
+                            scope_label: current_global_label.clone(),
+                            file: line.file.clone(),
+                            line_num: line.line_num,
+                        });
+                        // A later `.storage` may use a preceding global
+                        // constant (for example, `LEN = $200`). Define values
+                        // that are resolvable before layout now; expressions
+                        // involving packed labels are resolved after labels
+                        // receive their final addresses below.
+                        if !*is_local {
+                            if let Ok(value) = self.eval_expr(expr) {
+                                self.symbols.define_constant(name, value, &line.file, line.line_num)?;
+                            }
+                        }
                     }
                     ParsedLine::Directive(Directive::Storage { length, filler }) => {
                         if filler.is_some() {
@@ -2083,6 +2113,10 @@ struct PackConst {
     name: String,
     is_local: bool,
     expr: Expr,
+    /// Global pack label whose local scope was active at this definition.
+    scope_label: Option<String>,
+    file: String,
+    line_num: usize,
 }
 
 /// A collected, measured pack block.

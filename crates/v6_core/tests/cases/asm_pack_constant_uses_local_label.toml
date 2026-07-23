@@ -1,0 +1,21 @@
+# A global constant inside a pack block can refer to an @local label in the
+# source scope of its preceding global label. Pack labels are assigned together,
+# so this must not resolve @data_end in the later block's final scope.
+
+[files]
+"main.asm" = '''
+.org $100
+.pack
+first:
+    .storage 2
+@data_end:
+FIRST_LEN = @data_end - first
+second:
+    .storage 3
+.endpack
+'''
+
+[expect]
+
+[expect.symbols]
+FIRST_LEN = 2

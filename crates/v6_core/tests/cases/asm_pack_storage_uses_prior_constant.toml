@@ -1,0 +1,24 @@
+# A pack block may define a global constant before using it in a later .storage.
+# Collection measures the storage before packed labels are assigned, so the
+# preceding constant must still be available at that point.
+
+[files]
+"main.asm" = '''
+.org $100
+.pack
+BUFFER_LEN = $20
+buffer:
+    .storage BUFFER_LEN
+.endpack
+after:
+    .byte $AA
+'''
+
+[expect]
+rom = "AA"
+min_addr = "0120"
+
+[expect.symbols]
+BUFFER_LEN = 32
+buffer = 256
+after = 288
