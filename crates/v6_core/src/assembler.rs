@@ -998,11 +998,13 @@ impl Assembler {
             if parse_macro_invocation(&line.text, &self.symbols).is_some() {
                 continue;
             }
-            let tokens = tokenize_line(&line.text, &line.file, line.line_num)?;
+            let tokens = tokenize_line(&line.text, &line.file, line.line_num)
+                .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
             if tokens.is_empty() {
                 continue;
             }
-            let parsed = parser::parse_line(&tokens, self.cpu_mode)?;
+            let parsed = parser::parse_line(&tokens, self.cpu_mode)
+                .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
             if parsed.len() != 1 {
                 continue;
             }
