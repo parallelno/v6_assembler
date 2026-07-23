@@ -1714,14 +1714,15 @@ impl Assembler {
             return Ok(());
         }
 
-        let (offsets, arena_size) = compute_pack_offsets(&blocks);
+        let layout = compute_pack_layout(&blocks);
+        self.define_pack_analysis_constants(&blocks, &layout)?;
 
         let mut pack_scopes = HashMap::new();
         match self.output_format {
             OutputFormat::Rom => {
                 let base = round_up_u32(self.pc as u32, PACK_DOMAIN) as u16;
                 for (bi, block) in blocks.iter().enumerate() {
-                    let block_base = base as u32 + offsets[bi];
+                    let block_base = base as u32 + layout.offsets[bi];
                     for lbl in &block.labels {
                         let addr = (block_base + lbl.offset) as u16;
                         if lbl.is_local {
@@ -1733,17 +1734,17 @@ impl Assembler {
                     }
                 }
                 self.pack_arena_base = base;
-                self.pack_arena_size = arena_size;
+                self.pack_arena_size = layout.arena_size;
                 // Reserve the whole arena so inline content after the first
                 // `.pack` resumes past it. No fill: the region is uninitialized.
-                self.pc = base.wrapping_add(arena_size as u16);
+                self.pc = base.wrapping_add(layout.arena_size as u16);
             }
             OutputFormat::Obj => {
                 let sec = self.obj.section_index(".bss.pack");
                 self.obj.sections[sec].set_align(PACK_DOMAIN);
                 let sec_base = self.obj.sections[sec].size;
                 for (bi, block) in blocks.iter().enumerate() {
-                    let block_base = sec_base + offsets[bi];
+                    let block_base = sec_base + layout.offsets[bi];
                     for lbl in &block.labels {
                         let off = (block_base + lbl.offset) as u16;
                         if lbl.is_local {
@@ -1754,8 +1755,8 @@ impl Assembler {
                         }
                     }
                 }
-                self.obj.sections[sec].reserve(arena_size);
-                self.pack_arena_size = arena_size;
+                self.obj.sections[sec].reserve(layout.arena_size);
+                self.pack_arena_size = layout.arena_size;
             }
         }
 
@@ -1790,6 +1791,21 @@ impl Assembler {
             }
         }
 
+        Ok(())
+    }
+
+    /// Define compiler-generated pack metrics. Gap offsets are relative to the
+    /// arena, which keeps them meaningful in both ROM and object output.
+    fn define_pack_analysis_constants(&mut self, blocks: &[PackBlockData], layout: &PackLayout) -> AsmResult<()> {
+        let location = &blocks[0];
+        let waste_bytes: u32 = layout.holes.iter().map(|(start, end)| end - start).sum();
+        self.symbols.define_constant("__PACK_ARENA_SIZE", layout.arena_size as i64, &location.file, location.line_num)?;
+        self.symbols.define_constant("__PACK_WASTE_BYTES", waste_bytes as i64, &location.file, location.line_num)?;
+        self.symbols.define_constant("__PACK_WASTE_COUNT", layout.holes.len() as i64, &location.file, location.line_num)?;
+        for (index, &(start, end)) in layout.holes.iter().enumerate() {
+            self.symbols.define_constant(&format!("__PACK_WASTE_{}_OFFSET", index), start as i64, &location.file, location.line_num)?;
+            self.symbols.define_constant(&format!("__PACK_WASTE_{}_SIZE", index), (end - start) as i64, &location.file, location.line_num)?;
+        }
         Ok(())
     }
 
@@ -2129,6 +2145,14 @@ struct PackBlockData {
     line_num: usize,
 }
 
+/// Final layout of a collected pack arena. Holes are half-open arena-relative
+/// ranges that remain unoccupied after the packer has placed every block.
+struct PackLayout {
+    offsets: Vec<u32>,
+    arena_size: u32,
+    holes: Vec<(u32, u32)>,
+}
+
 fn round_up_u32(x: u32, m: u32) -> u32 {
     ((x + m - 1) / m) * m
 }
@@ -2159,8 +2183,8 @@ fn fit_in_hole(hs: u32, he: u32, size: u32, is_window: bool) -> Option<u32> {
 /// then placed (descending size, best-fit, non-straddling) followed by fillers.
 /// When an appended window bumps past a boundary the skipped bytes are
 /// registered as a hole so later blocks can reuse them. Returns per-block
-/// offsets (in source order) and the total arena size.
-fn compute_pack_offsets(blocks: &[PackBlockData]) -> (Vec<u32>, u32) {
+/// offsets (in source order), arena size, and all unused interior holes.
+fn compute_pack_layout(blocks: &[PackBlockData]) -> PackLayout {
     let n = blocks.len();
     let mut offsets = vec![0u32; n];
     let mut holes: Vec<(u32, u32)> = Vec::new();
@@ -2230,5 +2254,10 @@ fn compute_pack_offsets(blocks: &[PackBlockData]) -> (Vec<u32>, u32) {
         }
     }
 
-    (offsets, append_cursor.max(cursor))
+    holes.sort();
+    PackLayout {
+        offsets,
+        arena_size: append_cursor.max(cursor),
+        holes,
+    }
 }

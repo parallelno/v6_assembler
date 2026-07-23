@@ -388,6 +388,23 @@ object mode all pack blocks are placed in one `.bss.pack` NOBITS section with
 256-byte alignment. The section reserves runtime space but contributes no file
 bytes. See [Object Output](object-output.md) for the object-mode section model.
 
+### Pack analysis constants
+
+After laying out pack blocks, the assembler defines these reserved global
+constants. Gap offsets are relative to the start of the pack arena, so the
+same values apply to ROM and object output:
+
+| Constant | Meaning |
+|----------|---------|
+| `__PACK_ARENA_SIZE` | Total reserved size of the pack arena. |
+| `__PACK_WASTE_BYTES` | Sum of all unfilled gaps after packing. |
+| `__PACK_WASTE_COUNT` | Number of unfilled gaps. |
+| `__PACK_WASTE_<n>_OFFSET` | Arena-relative offset of unfilled gap `n`. |
+| `__PACK_WASTE_<n>_SIZE` | Length of unfilled gap `n`. |
+
+Gaps are numbered by ascending arena offset. Names beginning with `__PACK_`
+are reserved for assembler-generated pack analysis constants.
+
 ## Data Emission
 
 ### `.byte` / `DB`

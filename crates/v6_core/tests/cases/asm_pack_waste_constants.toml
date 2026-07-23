@@ -1,0 +1,25 @@
+# Final unfilled pack holes are exposed through compiler-defined __PACK_* metrics.
+
+[files]
+"main.asm" = '''
+.org $100
+.pack align
+large:
+    .storage 240
+.endpack
+.pack align
+small:
+    .storage 16
+.endpack
+'''
+
+[expect]
+
+[expect.symbols]
+large = 256
+small = 512
+__PACK_ARENA_SIZE = 272
+__PACK_WASTE_BYTES = 16
+__PACK_WASTE_COUNT = 1
+__PACK_WASTE_0_OFFSET = 240
+__PACK_WASTE_0_SIZE = 16
