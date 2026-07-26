@@ -79,21 +79,30 @@ page-aligned buffer) carry the alignment the linker must honor.
 ### `.pack` blocks
 
 `.pack` / `.endpack` blocks are runtime-only storage blocks. In object mode
-they are collected into a single `.bss.pack` section with these properties:
+each logical block is emitted as a distinct input section:
 
-| Property | Value |
-|----------|-------|
-| Type | `SHT_NOBITS` |
-| Flags | `SHF_ALLOC | SHF_WRITE` |
-| Alignment | 256 bytes |
-| File contents | None; only runtime size is reserved |
+| Directive | Input section | Linker constraint |
+|-----------|---------------|-------------------|
+| `.pack` | `.bss.pack` | May start anywhere and cross a 256-byte boundary. |
+| `.pack align` | `.bss.pack.align` | Must start on a 256-byte boundary. |
+| `.pack window` | `.bss.pack.window` | Must fit within one 256-byte page. |
 
-The section is created implicitly and is placed by the linker with the other
-`.bss` sections. Its internal offsets are already packed by v6asm: `.pack
-align` labels start on 256-byte boundaries, `.pack window` blocks do not cross
-one, and plain `.pack` blocks fill remaining holes. Packing is performed per
-object; the linker concatenates `.bss.pack` input sections and does not repack
-across object files.
+Every block section is `SHT_NOBITS`, has `SHF_ALLOC | SHF_WRITE`, alignment 1,
+and reserves runtime space without contributing file bytes. Repeated blocks of
+the same kind remain distinct section headers even though they have the same
+name. Symbols are block-relative, and normal relocations give
+`ld.lld --gc-sections` an independent reachability edge for each block.
+
+The V6C linker collects surviving blocks into its dedicated `.bss.pack` output
+section and packs them globally across all input objects. It applies anchor and
+window constraints using final absolute addresses, after garbage collection.
+Custom linker scripts must collect the three exact input names in a dedicated
+output section before a broad `.bss.*` pattern. The standard V6C linker script
+already does this and keeps the packed arena within `__bss_start` and
+`__bss_end`.
+
+The assembler does not define `__PACK_*` analysis constants in object mode,
+because only the linker knows the surviving blocks and final arena layout.
 
 For example:
 
@@ -109,7 +118,8 @@ small_runtime_data:
 .endpack
 ```
 
-Use `llvm-readelf -S module.o` to inspect the resulting `.bss.pack` section.
+Use `llvm-readelf -S -s -r module.o` to inspect the block sections, symbols,
+and relocation reachability edges.
 
 
 ### `.optional` blocks become sections

@@ -60,11 +60,16 @@ impl ObjectState {
         if let Some(idx) = self.sections.iter().position(|s| s.name == name) {
             idx
         } else {
-            let flags = Section::default_flags(name);
-            let sh_type = Section::default_type(name);
-            self.sections.push(Section::new(name, flags, sh_type));
-            self.sections.len() - 1
+            self.create_section(name)
         }
+    }
+
+    /// Create a distinct section even when another section has the same name.
+    fn create_section(&mut self, name: &str) -> usize {
+        let flags = Section::default_flags(name);
+        let sh_type = Section::default_type(name);
+        self.sections.push(Section::new(name, flags, sh_type));
+        self.sections.len() - 1
     }
 }
 
@@ -1714,12 +1719,11 @@ impl Assembler {
             return Ok(());
         }
 
-        let layout = compute_pack_layout(&blocks);
-        self.define_pack_analysis_constants(&blocks, &layout)?;
-
         let mut pack_scopes = HashMap::new();
         match self.output_format {
             OutputFormat::Rom => {
+                let layout = compute_pack_layout(&blocks);
+                self.define_pack_analysis_constants(&blocks, &layout)?;
                 let base = round_up_u32(self.pc as u32, PACK_DOMAIN) as u16;
                 for (bi, block) in blocks.iter().enumerate() {
                     let block_base = base as u32 + layout.offsets[bi];
@@ -1740,13 +1744,15 @@ impl Assembler {
                 self.pc = base.wrapping_add(layout.arena_size as u16);
             }
             OutputFormat::Obj => {
-                let sec = self.obj.section_index(".bss.pack");
-                self.obj.sections[sec].set_align(PACK_DOMAIN);
-                let sec_base = self.obj.sections[sec].size;
-                for (bi, block) in blocks.iter().enumerate() {
-                    let block_base = sec_base + layout.offsets[bi];
+                for block in &blocks {
+                    let name = match block.kind {
+                        PackKind::Filler => ".bss.pack",
+                        PackKind::Align => ".bss.pack.align",
+                        PackKind::Window => ".bss.pack.window",
+                    };
+                    let sec = self.obj.create_section(name);
                     for lbl in &block.labels {
-                        let off = (block_base + lbl.offset) as u16;
+                        let off = lbl.offset as u16;
                         if lbl.is_local {
                             self.symbols.define_local_label_in(&lbl.name, off, Some(sec), &block.file, block.line_num)?;
                         } else {
@@ -1754,9 +1760,8 @@ impl Assembler {
                             pack_scopes.insert(lbl.name.to_uppercase(), self.symbols.current_scope());
                         }
                     }
+                    self.obj.sections[sec].reserve(block.size);
                 }
-                self.obj.sections[sec].reserve(layout.arena_size);
-                self.pack_arena_size = layout.arena_size;
             }
         }
 
@@ -1794,8 +1799,8 @@ impl Assembler {
         Ok(())
     }
 
-    /// Define compiler-generated pack metrics. Gap offsets are relative to the
-    /// arena, which keeps them meaningful in both ROM and object output.
+    /// Define ROM-mode pack metrics. Object-mode placement happens after
+    /// linker GC, so the assembler cannot know its final arena or gaps.
     fn define_pack_analysis_constants(&mut self, blocks: &[PackBlockData], layout: &PackLayout) -> AsmResult<()> {
         let location = &blocks[0];
         let waste_bytes: u32 = layout.holes.iter().map(|(start, end)| end - start).sum();

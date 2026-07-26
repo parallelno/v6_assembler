@@ -550,101 +550,200 @@ fn org_is_rejected_in_object_mode() {
 
 #[test]
 fn pack_blocks_go_into_bss_pack_nobits_section() {
-    use v6_core::object::section::SHT_NOBITS;
-    // Two anchors + one filler; the arena is a single NOBITS `.bss.pack`
-    // section aligned to 0x100, sized to the packed total.
+    use v6_core::object::section::{SHF_ALLOC, SHF_WRITE, SHT_NOBITS};
+    // Every logical block is a distinct alignment-1 NOBITS section. The two
+    // anchors intentionally have the same visible section name.
     let asm = assemble_obj(
-        ".pack align\n\
-         a:\n\
+        ".global *\n\
+         lxi h, pack_a\n\
+         lxi d, pack_b\n\
+         lxi b, pack_c\n\
+         .pack align\n\
+         pack_a:\n\
          .storage 256\n\
          .endpack\n\
          .pack align\n\
-         b:\n\
+         pack_b:\n\
          .storage 256\n\
          .endpack\n\
          .pack\n\
-         c:\n\
+         pack_c:\n\
          .storage 16\n\
          .endpack\n",
     )
     .unwrap();
 
-    let sec_idx = asm
+    let packed: Vec<(usize, _)> = asm
         .obj
         .sections
         .iter()
-        .position(|s| s.name == ".bss.pack")
-        .expect("expected a .bss.pack section");
-    let sec = &asm.obj.sections[sec_idx];
-    assert_eq!(sec.sh_type, SHT_NOBITS);
-    assert!(sec.is_nobits());
-    assert!(sec.bytes.is_empty());
-    assert_eq!(sec.addralign, 256);
-    // 256 + 256 + 16 = 528 bytes, no padding needed (filler fits after).
-    assert_eq!(sec.size, 528);
+        .enumerate()
+        .filter(|(_, section)| section.name.starts_with(".bss.pack"))
+        .collect();
+    assert_eq!(packed.len(), 3);
+    assert_eq!(packed[0].1.name, ".bss.pack.align");
+    assert_eq!(packed[1].1.name, ".bss.pack.align");
+    assert_eq!(packed[2].1.name, ".bss.pack");
+    assert_eq!(
+        packed
+            .iter()
+            .map(|(_, section)| section.size)
+            .collect::<Vec<_>>(),
+        vec![256, 256, 16]
+    );
+    for (_, section) in &packed {
+        assert_eq!(section.sh_type, SHT_NOBITS);
+        assert_eq!(section.flags, SHF_ALLOC | SHF_WRITE);
+        assert!(section.is_nobits());
+        assert!(section.bytes.is_empty());
+        assert_eq!(section.addralign, 1);
+    }
 
-    // Labels are section-relative offsets within `.bss.pack`.
-    let a = asm.symbols.get_global_info("a").unwrap();
-    let b = asm.symbols.get_global_info("b").unwrap();
-    let c = asm.symbols.get_global_info("c").unwrap();
-    assert_eq!(a.section, Some(sec_idx));
-    assert_eq!(b.section, Some(sec_idx));
-    assert_eq!(c.section, Some(sec_idx));
+    // Labels are block-relative and owned by distinct section headers.
+    let a = asm.symbols.get_global_info("pack_a").unwrap();
+    let b = asm.symbols.get_global_info("pack_b").unwrap();
+    let c = asm.symbols.get_global_info("pack_c").unwrap();
+    assert_eq!(a.section, Some(packed[0].0));
+    assert_eq!(b.section, Some(packed[1].0));
+    assert_eq!(c.section, Some(packed[2].0));
     assert_eq!(a.value, Some(0));
-    assert_eq!(b.value, Some(256));
-    assert_eq!(c.value, Some(512));
+    assert_eq!(b.value, Some(0));
+    assert_eq!(c.value, Some(0));
+
+    // Serialization preserves duplicate visible names as distinct headers,
+    // gives each label its block's section index, and keeps one relocation
+    // reachability edge to each block.
+    let bytes = generate_object(&asm, &ObjConfig::default()).unwrap();
+    let e_shoff = read_u32(&bytes, 32) as usize;
+    let e_shentsize = read_u16(&bytes, 46) as usize;
+    let e_shnum = read_u16(&bytes, 48) as usize;
+    let e_shstrndx = read_u16(&bytes, 50) as usize;
+    let sh = |index: usize| e_shoff + index * e_shentsize;
+    let shstr_off = read_u32(&bytes, sh(e_shstrndx) + 16) as usize;
+    let str_at = |base: usize, index: u32| -> String {
+        let start = base + index as usize;
+        let end = bytes[start..]
+            .iter()
+            .position(|&c| c == 0)
+            .map(|pos| start + pos)
+            .unwrap();
+        String::from_utf8_lossy(&bytes[start..end]).into_owned()
+    };
+    let section_names: Vec<_> = (0..e_shnum)
+        .map(|index| str_at(shstr_off, read_u32(&bytes, sh(index))))
+        .collect();
+    let align_headers: Vec<_> = section_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| *name == ".bss.pack.align")
+        .map(|(index, _)| index)
+        .collect();
+    let filler_header = section_names
+        .iter()
+        .position(|name| name == ".bss.pack")
+        .unwrap();
+    assert_eq!(align_headers.len(), 2);
+    assert_ne!(align_headers[0], align_headers[1]);
+
+    let symtab_i = section_names
+        .iter()
+        .position(|name| name == ".symtab")
+        .unwrap();
+    let strtab_i = section_names
+        .iter()
+        .position(|name| name == ".strtab")
+        .unwrap();
+    let symtab_off = read_u32(&bytes, sh(symtab_i) + 16) as usize;
+    let symtab_size = read_u32(&bytes, sh(symtab_i) + 20) as usize;
+    let strtab_off = read_u32(&bytes, sh(strtab_i) + 16) as usize;
+    let mut symbol_sections = std::collections::HashMap::new();
+    for index in 0..symtab_size / 16 {
+        let base = symtab_off + index * 16;
+        symbol_sections.insert(
+            str_at(strtab_off, read_u32(&bytes, base)),
+            read_u16(&bytes, base + 14),
+        );
+    }
+    assert_eq!(symbol_sections["pack_a"] as usize, align_headers[0]);
+    assert_eq!(symbol_sections["pack_b"] as usize, align_headers[1]);
+    assert_eq!(symbol_sections["pack_c"] as usize, filler_header);
+
+    let rela_text_i = section_names
+        .iter()
+        .position(|name| name == ".rela.text")
+        .unwrap();
+    let rela_off = read_u32(&bytes, sh(rela_text_i) + 16) as usize;
+    let rela_size = read_u32(&bytes, sh(rela_text_i) + 20) as usize;
+    let mut targets = Vec::new();
+    for index in 0..rela_size / 12 {
+        let r_info = read_u32(&bytes, rela_off + index * 12 + 4);
+        let symbol_index = (r_info >> 8) as usize;
+        targets.push(
+            read_u16(&bytes, symtab_off + symbol_index * 16 + 14) as usize,
+        );
+    }
+    assert_eq!(
+        targets,
+        vec![align_headers[0], align_headers[1], filler_header]
+    );
 }
 
 #[test]
-fn pack_dataset_obj_matches_layout() {
-    // The full runtime dataset (temp/pack/pack.py) packs to a 0xCA0-byte arena
-    // in a `.bss.pack` NOBITS section; spot-check a few packed offsets.
-    let asm = assemble_obj(
-        ".pack window\nhero_resources:\n.storage 17\n.endpack\n\
-         .pack\nos_io_data:\n.storage 17\n.endpack\n\
-         .pack\nswitch_statuses:\n.storage 2\n.endpack\n\
-         .pack\nglobal_states:\n.storage 10\n.endpack\n\
-         .pack\nchars_runtime_data:\n.storage 482\n.endpack\n\
-         .pack window\noverlays_runtime_data:\n.storage 227\n.endpack\n\
-         .pack\nactor_data_head_ptr:\n.storage 2\n.endpack\n\
-         .pack\nlv_data_init_tbl:\n.storage 14\n.endpack\n\
-         .pack\nroom_tiledata_backup:\n.storage 240\n.endpack\n\
-         .pack\ntemp_buff:\n.storage 512\n.endpack\n\
-         .pack\nroom_teleports_data:\n.storage 16\n.endpack\n\
-         .pack\ngame_status:\n.storage 16\n.endpack\n\
-         .pack\nroom_tiles_gfx_ptrs:\n.storage 480\n.endpack\n\
-         .pack align\nroom_tiledata:\n.storage 240\n.endpack\n\
-         .pack\npalette:\n.storage 16\n.endpack\n\
-         .pack align\ncontainers_inst_data_ptrs:\n.storage 256\n.endpack\n\
-         .pack align\nresources_inst_data_ptrs:\n.storage 256\n.endpack\n\
-         .pack align\nbreakables_status:\n.storage 256\n.endpack\n\
-         .pack window\nbacks_runtime_data:\n.storage 62\n.endpack\n\
-         .pack\nhero_runtime_data:\n.storage 31\n.endpack\n\
-         .pack window\nrooms_spawn_rate:\n.storage 64\n.endpack\n\
-         .pack\nglobal_items:\n.storage 15\n.endpack\n\
-         .pack\nram_disk_mode:\n.storage 1\n.endpack\n",
-    )
-    .unwrap();
+fn pack_dataset_obj_matches_producer_contract() {
+    // The full runtime dataset emits one linker-packable section per block.
+    let asm = assemble_obj(include_str!("fixtures/v6_runtime_data.asm")).unwrap();
 
-    let sec_idx = asm
+    // Only the linker knows post-GC arena metrics in object mode.
+    assert!(asm.symbols.get_global_info("__PACK_ARENA_SIZE").is_none());
+    assert!(asm.symbols.get_global_info("__PACK_WASTE_BYTES").is_none());
+
+    let packed: Vec<_> = asm
         .obj
         .sections
         .iter()
-        .position(|s| s.name == ".bss.pack")
-        .expect("expected a .bss.pack section");
-    assert_eq!(asm.obj.sections[sec_idx].size, 0xCA0);
-    assert_eq!(asm.obj.sections[sec_idx].addralign, 256);
+        .filter(|section| section.name.starts_with(".bss.pack"))
+        .collect();
+    assert_eq!(packed.len(), 23);
+    assert_eq!(
+        packed.iter().map(|section| section.size).sum::<u32>(),
+        0xCA0
+    );
+    assert_eq!(
+        packed
+            .iter()
+            .filter(|section| section.name == ".bss.pack.align")
+            .count(),
+        4
+    );
+    assert_eq!(
+        packed
+            .iter()
+            .filter(|section| section.name == ".bss.pack.window")
+            .count(),
+        4
+    );
+    assert_eq!(
+        packed
+            .iter()
+            .filter(|section| section.name == ".bss.pack")
+            .count(),
+        15
+    );
+    assert!(packed.iter().all(|section| section.addralign == 1));
 
-    let off = |name: &str| asm.symbols.get_global_info(name).unwrap().value.unwrap();
-    assert_eq!(off("containers_inst_data_ptrs"), 0x000);
-    assert_eq!(off("resources_inst_data_ptrs"), 0x100);
-    assert_eq!(off("breakables_status"), 0x200);
-    assert_eq!(off("room_tiledata"), 0x300);
-    assert_eq!(off("room_teleports_data"), 0x3F0);
-    assert_eq!(off("overlays_runtime_data"), 0x400);
-    assert_eq!(off("hero_resources"), 0x4E3);
-    assert_eq!(off("rooms_spawn_rate"), 0x500);
-    assert_eq!(off("ram_disk_mode"), 0xC9F);
+    for name in [
+        "containers_inst_data_ptrs",
+        "resources_inst_data_ptrs",
+        "breakables_status",
+        "room_tiledata",
+        "room_teleports_data",
+        "overlays_runtime_data",
+        "hero_resources",
+        "rooms_spawn_rate",
+        "ram_disk_mode",
+    ] {
+        assert_eq!(asm.symbols.get_global_info(name).unwrap().value, Some(0));
+    }
 }
 
 // ── ELF serialization ────────────────────────────────────────────────────────

@@ -347,11 +347,11 @@ after:    .db 0xAA              ; assembled after the reserved space
 
 ## `.pack` / `.endpack`
 
-Collects runtime-only storage blocks into one tightly packed arena. A pack
-block may contain labels, constant assignments, and `.storage <length>`
-reservations without a filler. It may not contain instructions, initialized
-data, `.align`, `.org`, section switches, `.optional`, or another `.pack`.
-Every block must define at least one label and reserve at least one byte.
+Declares movable runtime-only storage blocks. A pack block may contain labels,
+constant assignments, and `.storage <length>` reservations without a filler.
+It may not contain instructions, initialized data, `.align`, `.org`, section
+switches, `.optional`, or another `.pack`. Every block must define at least one
+label and reserve at least one byte.
 
 The optional keyword selects the placement rule:
 
@@ -378,21 +378,24 @@ runtime_flags:
 .endpack
 ```
 
-Blocks are reordered by the assembler, so references must use labels rather
-than relying on source order. Anchors form the aligned skeleton; windowed
-blocks are then placed before filler blocks, using available holes first.
+References must use labels rather than relying on source order. In ROM mode,
+the assembler reorders blocks: anchors form the aligned skeleton, then
+windowed blocks and filler blocks use available holes. In object mode, the
+linker performs that reordering after garbage collection.
 
 In ROM mode the arena is reserved at the first `.pack` position, rounded up
 to a 256-byte boundary, and later inline content resumes after the arena. In
-object mode all pack blocks are placed in one `.bss.pack` NOBITS section with
-256-byte alignment. The section reserves runtime space but contributes no file
-bytes. See [Object Output](object-output.md) for the object-mode section model.
+object mode each block becomes a distinct alignment-1 `SHT_NOBITS` section:
+`.bss.pack`, `.bss.pack.align`, or `.bss.pack.window`. This lets
+`ld.lld --gc-sections` discard unreferenced blocks independently and lets the
+V6C linker pack all surviving blocks across object files using their final
+absolute addresses. See [Object Output](object-output.md) for the ELF contract.
 
 ### Pack analysis constants
 
-After laying out pack blocks, the assembler defines these reserved global
-constants. Gap offsets are relative to the start of the pack arena, so the
-same values apply to ROM and object output:
+In ROM mode, after laying out pack blocks, the assembler defines these reserved
+global constants. They are not defined in object mode because only the linker
+knows the post-GC global arena and its final gaps.
 
 | Constant | Meaning |
 |----------|---------|

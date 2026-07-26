@@ -1,10 +1,20 @@
-# Plan: `.pack` / `.endpack` blocks — assembler-side hole packing
+# Plan: `.pack` / `.endpack` blocks - ROM packing and ELF producer contract
+
+## Status
+
+**Implemented for ROM mode; superseded for ELF object mode.** In object mode,
+each logical `.pack` block is now emitted as an independent alignment-1 NOBITS
+section named `.bss.pack`, `.bss.pack.align`, or `.bss.pack.window`. `ld.lld`
+performs final packing after linker garbage collection. The source syntax,
+validation rules, block collection, ROM-mode packing algorithm, study script,
+and expected 3232-byte statistics remain current.
 
 ## Goal
 
-Let the assembler pack movable **runtime data** blocks into the holes that
-0x100 alignment leaves, squeezing more RAM variables into the tight page-bounded
-layout without changing `ld.lld`. This targets exactly the pattern in
+Let ROM output pack movable **runtime data** blocks into holes left by 0x100
+alignment. For ELF output, preserve the same source constraints as independent
+input sections and defer packing to the V6C `ld.lld`, which can see all live
+blocks after section garbage collection. This targets the pattern in
 `temp/pack/runtime_data.asm`: a wall of RAM variable blocks, some of which must
 be 0x100-aligned or must fit inside a single 0x100 page.
 
@@ -43,31 +53,20 @@ keyword, not a numeric argument:
 `window` is the type that makes real data (e.g. `runtime_data.asm`) pack
 tightly — see the efficiency study below.
 
-### One collected arena
+### One collected arena (ROM mode only)
 
-- **Object mode:** all `.pack` blocks collect into a single implicitly-created
-  section named **`.bss.pack`**, `SHT_NOBITS`, `SHF_ALLOC | SHF_WRITE`,
-  `sh_addralign = 0x100`. The `.bss.*` name makes the section inherit NOBITS +
-  alloc/write from `default_type`/`default_flags` and be routed by the standard
-  linker-script rule `*(.bss .bss.* ...)` into the RAM/BSS region with no custom
-  script. It occupies **no file bytes**; `ld.lld` places it on a 0x100 boundary
-  as one unit, preserving every internal offset — so each `align` block lands on
-  a page boundary and each `window` block stays within one page.
+- **Object mode:** superseded. Each block carries only its constraint kind and
+  size in a distinct alignment-1 NOBITS input section. Final offsets are not
+  pre-packed by the assembler.
 - **ROM mode:** no sections — the arena is one contiguous **reserved** region
   placed at the location of the **first `.pack` block in source order**, rounded
   up to 0x100. It reserves address space (advances the location counter) without
   emitting initialized bytes. Subsequent inline content resumes after the arena.
 
-### Multiple objects (obj mode)
+### Multiple objects (object mode, superseded model)
 
-The `.bss.pack` section is shared **in name only**. The linker never re-packs
-across objects — it **concatenates input sections**: each object's `.bss.pack`
-contribution is placed as one atomic 0x100-aligned unit, in link order, with up
-to 255 bytes of inter-object padding to re-align each to a page boundary. So
-packing is **per-object**; each object's internal layout (anchors on boundaries,
-windows within a page) is preserved because every object's arena base is
-0x100-aligned. Cross-object holes are not filled — that stays a non-goal. For
-this workload all packed RAM lives in one object, so the padding cost is zero.
+The former per-object arena model is retired. Independent input sections let
+`ld.lld` discard dead blocks and fill holes globally across all linked objects.
 
 ### Reordering is expected
 
@@ -95,11 +94,12 @@ labels (which resolve to packed addresses).
 - Unknown keyword after `.pack` → error.
 - `.endpack` without a matching `.pack`, or an unclosed `.pack` → error.
 
-## Packing algorithm (best-fit-decreasing)
+## ROM packing algorithm (best-fit-decreasing)
 
-Per compilation unit (no cross-object packing). Domain = 0x100; the arena base is
-0x100-aligned, so arena-relative offsets translate to correctly aligned/paged
-absolute addresses.
+For ROM output, domain = 0x100 and the arena base is 0x100-aligned, so
+arena-relative offsets translate to correctly aligned/paged absolute addresses.
+Object output does not run this layout algorithm; `ld.lld` applies the same
+policy globally to surviving input sections.
 
 1. **Skeleton (anchors).** Place `align` blocks in **descending size order**.
    Keep a `cursor` (arena-relative, from 0). For each anchor, round `cursor` up
@@ -135,17 +135,17 @@ Because blocks only reserve space:
   scan all source lines for every `.pack` block. Record each block's source
   range, kind, reserved **size**, and each label's offset within the block.
   Run all validations here. Do not assign inline addresses to pack labels.
-2. **Layout.** Run the packer immediately after collection → per-block arena
-  offset and `arena_size`. This lets pass 1 reserve the complete arena before
-  processing inline content that follows the first `.pack` block.
+2. **Layout.** In ROM mode, run the packer immediately after collection to get
+  each block's arena offset and `arena_size`. This lets pass 1 reserve the
+  complete arena before processing inline content after the first `.pack`.
+  Object mode does not calculate a provisional layout.
 3. **Address assignment.** Define every pack-block label at its packed address:
    - ROM: `arena_addr + offset`, where `arena_addr = align_up(pc_at_first_pack,
      0x100)`.
-   - Obj: section `.bss.pack`, section-relative `offset`.
+   - Obj: block-relative offset in that block's independent semantic section.
 4. **Reservation.** ROM: reserve `arena_size` at `arena_addr` so later inline
-   content doesn't overlap. Obj: grow the `.bss.pack` NOBITS section by
-   `arena_size` (no bytes written). No pass-2 body replay, no relocation
-   handling.
+  content doesn't overlap. Obj: reserve only the logical block size in each
+  NOBITS section. No pass-2 body replay is needed.
 
 ## Relevant existing code
 
@@ -179,9 +179,9 @@ Because blocks only reserve space:
 4. **Packer**: descending-size skeleton of anchors, then two best-fit passes
    (windows first, then fillers) with the `align`/`window`/`filler` rules above
    → arena offsets and `arena_size`.
-5. **Address assignment + reservation**: define pack labels at packed addresses;
-   reserve `arena_size` (ROM at the first-`.pack` anchor; obj in the `.bss.pack`
-   NOBITS section).
+5. **Address assignment + reservation**: in ROM mode define labels at packed
+  addresses and reserve `arena_size`; in object mode define block-relative
+  labels and reserve each block in its own semantic NOBITS section.
 6. **Listing**: record `.pack` / `.endpack` lines like the `.optional` arms.
 
 ## Efficiency study (temp/pack/pack.py)
@@ -223,11 +223,10 @@ into a forced hole.
   nested `.pack`.
 
 `object_tests.rs` (obj):
-- All `.pack` blocks land in one `.bss.pack` section: `SHT_NOBITS`,
-  `SHF_ALLOC | SHF_WRITE`, `sh_addralign = 0x100`, zero file bytes.
-- `align` label at a 0x100-multiple offset; `window` label within one page;
-  filler label anywhere.
-- `llvm-readelf -S out.o` shows `.bss.pack` as NOBITS with `Align = 256`.
+- Each block has a distinct `.bss.pack`, `.bss.pack.align`, or
+  `.bss.pack.window` section header, including repeated same-name headers.
+- Every block is `SHT_NOBITS`, `SHF_ALLOC | SHF_WRITE`, alignment 1, and sized
+  independently; symbols and relocations retain the owning section index.
 
 ## Verification
 
@@ -235,12 +234,14 @@ into a forced hole.
 - ROM: assemble a runtime-data file using `.pack` / `.pack align` / `.pack
   window`; inspect the `.lst` to confirm holes are filled, anchors on boundaries,
   and no `window` block straddles a page.
-- Obj: `llvm-readelf -S` shows the NOBITS aligned `.bss.pack` section.
+- Obj: `llvm-readelf -S -s -r` shows independent alignment-1 NOBITS sections,
+  block-owned symbols, and relocation edges from live code.
 
 ## Non-goals
 
 - Initialized data or code inside `.pack` blocks (reservation only).
-- Cross-object-file packing (would need a post-link tool).
+- Cross-object-file packing in the assembler; final object packing belongs to
+  `ld.lld`.
 - Alignment domains other than 0x100.
 - Nested `.pack` blocks; `.align` inside a `.pack` block.
 - Honoring source order for placed blocks (packer reorders freely).
