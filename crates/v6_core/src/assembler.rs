@@ -392,7 +392,12 @@ impl Assembler {
                         }
                         ControlDirective::Pack => {
                             let end = self.find_matching_block_end(lines, i, BlockKind::Pack)?;
-                            self.ensure_pack_laid_out(lines)
+                            let pack_lines = if self.output_format == OutputFormat::Obj {
+                                &lines[i..=end]
+                            } else {
+                                lines
+                            };
+                            self.ensure_pack_laid_out(pack_lines)
                                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
                             i = end + 1;
                             continue;
@@ -792,7 +797,12 @@ impl Assembler {
                         }
                         ControlDirective::Pack => {
                             let end = self.find_matching_block_end(lines, i, BlockKind::Pack)?;
-                            self.ensure_pack_laid_out(lines)
+                            let pack_lines = if self.output_format == OutputFormat::Obj {
+                                &lines[i..=end]
+                            } else {
+                                lines
+                            };
+                            self.ensure_pack_laid_out(pack_lines)
                                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
                             // Record the .pack and .endpack lines in the listing.
                             self.listing_data.push(ListingLine {
@@ -1706,13 +1716,17 @@ impl Assembler {
     /// Collect, pack, reserve and assign addresses for every `.pack` block in
     /// `lines`. Runs once per pass (guarded by `self.pack_laid_out`) the first
     /// time a `.pack` directive is reached, so trailing content receives the
-    /// correct location counter. Pack blocks are runtime-only reservations: no
-    /// bytes are emitted; labels are defined at their packed addresses.
+    /// correct location counter in ROM mode. Object mode calls this once per
+    /// block so size constants may depend on source definitions processed
+    /// before that block. Pack blocks are runtime-only reservations: no bytes
+    /// are emitted; labels are defined at their packed addresses.
     fn ensure_pack_laid_out(&mut self, lines: &[SourceLine]) -> AsmResult<()> {
-        if self.pack_laid_out {
-            return Ok(());
+        if self.output_format == OutputFormat::Rom {
+            if self.pack_laid_out {
+                return Ok(());
+            }
+            self.pack_laid_out = true;
         }
-        self.pack_laid_out = true;
 
         let blocks = self.collect_pack_blocks(lines)?;
         if blocks.is_empty() {
@@ -1783,7 +1797,11 @@ impl Assembler {
                     Ok(val) => {
                         if c.is_local {
                             self.symbols.define_local_constant(&c.name, val, &c.file, c.line_num)?;
-                        } else {
+                        } else if self.symbols
+                            .get_global_info(&c.name)
+                            .and_then(|info| info.value)
+                            .is_none()
+                        {
                             self.symbols.define_constant(&c.name, val, &c.file, c.line_num)?;
                         }
                     }
@@ -1885,7 +1903,11 @@ impl Assembler {
                         // that are resolvable before layout now; expressions
                         // involving packed labels are resolved after labels
                         // receive their final addresses below.
-                        if !*is_local {
+                        let is_resolved_global = self.symbols
+                            .get_global_info(name)
+                            .and_then(|info| info.value)
+                            .is_some();
+                        if !*is_local && !is_resolved_global {
                             if let Ok(value) = self.eval_expr(expr) {
                                 self.symbols.define_constant(name, value, &line.file, line.line_num)?;
                             }

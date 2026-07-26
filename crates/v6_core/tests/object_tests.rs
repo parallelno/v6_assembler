@@ -746,6 +746,65 @@ fn pack_dataset_obj_matches_producer_contract() {
     }
 }
 
+#[test]
+fn pack_storage_uses_preceding_constant_inside_conditional() -> Result<(), AsmError> {
+    let dir = TempDir::new();
+    let main_path = dir.root.join("main.asm");
+    fs::write(
+        &main_path,
+        ".setting force_once, true\n\
+         WORD_LEN = 2\n\
+                 .pack\n\
+                 early_data:\n\
+                     .storage 1\n\
+                 .endpack\n\
+         ENABLE = 1\n\
+         .if ENABLE\n\
+         .include \"sound.asm\"\n\
+         .endif\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.root.join("sound.asm"),
+        ".include \"constants.asm\"\n\
+         .include \"runtime-data.asm\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.root.join("constants.asm"),
+        ".global RAM_DISK_MUSIC\n\
+         GC_TASKS = 14\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.root.join("runtime-data.asm"),
+        ".pack\n\
+         V6_GC_TASK_SPS_LEN = GC_TASKS * WORD_LEN\n\
+         v6_gc_task_sps:\n\
+           .storage V6_GC_TASK_SPS_LEN\n\
+         .endpack\n",
+    )
+    .unwrap();
+
+    let mut asm = Assembler::new(CpuMode::I8080, dir.root.clone());
+    asm.quiet = true;
+    asm.output_format = OutputFormat::Obj;
+    let lines = preprocess(&main_path, &dir.root, &[], &mut asm.symbols, &|path| {
+        fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
+    })?;
+    asm.assemble(&lines)?;
+
+    assert_eq!(asm.symbols.resolve("V6_GC_TASK_SPS_LEN"), Some(28));
+    let packed = asm
+        .obj
+        .sections
+        .iter()
+        .filter(|section| section.name == ".bss.pack")
+        .collect::<Vec<_>>();
+    assert_eq!(packed.iter().map(|section| section.size).sum::<u32>(), 29);
+    Ok(())
+}
+
 // ── ELF serialization ────────────────────────────────────────────────────────
 
 fn read_u16(b: &[u8], off: usize) -> u16 {
