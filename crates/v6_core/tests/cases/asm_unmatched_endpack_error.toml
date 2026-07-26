@@ -1,0 +1,8 @@
+[files]
+"main.asm" = '''
+.endpack
+'''
+
+[expect]
+error_contains = "Unexpected .endpack without matching .pack"
+error_line = 1

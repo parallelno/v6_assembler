@@ -1,0 +1,8 @@
+[files]
+"main.asm" = '''
+.endloop
+'''
+
+[expect]
+error_contains = "Unexpected .endloop without matching .loop"
+error_line = 1

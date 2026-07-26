@@ -402,12 +402,21 @@ impl Assembler {
                             i = end + 1;
                             continue;
                         }
-                        ControlDirective::EndIf
-                        | ControlDirective::EndLoop
-                        | ControlDirective::EndOptional
-                        | ControlDirective::EndPack => {
-                            i += 1;
-                            continue;
+                        ControlDirective::EndIf => {
+                            return Err(AsmError::new("Unexpected .endif without matching .if")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        ControlDirective::EndLoop => {
+                            return Err(AsmError::new("Unexpected .endloop without matching .loop")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        ControlDirective::EndOptional => {
+                            return Err(AsmError::new("Unexpected .endopt without matching .opt")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        ControlDirective::EndPack => {
+                            return Err(AsmError::new("Unexpected .endpack without matching .pack")
+                                .ensure_location(&line.file, line.line_num));
                         }
                     }
                 }
@@ -825,20 +834,21 @@ impl Assembler {
                             i = end + 1;
                             continue;
                         }
-                        ControlDirective::EndIf
-                        | ControlDirective::EndLoop
-                        | ControlDirective::EndOptional
-                        | ControlDirective::EndPack => {
-                            self.listing_data.push(ListingLine {
-                                file: line.file.clone(),
-                                line_num: line.line_num,
-                                text: line.text.clone(),
-                                addr: self.pc,
-                                byte_count: 0,
-                                macro_expansion: line.macro_context.is_some(),
-                            });
-                            i += 1;
-                            continue;
+                        ControlDirective::EndIf => {
+                            return Err(AsmError::new("Unexpected .endif without matching .if")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        ControlDirective::EndLoop => {
+                            return Err(AsmError::new("Unexpected .endloop without matching .loop")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        ControlDirective::EndOptional => {
+                            return Err(AsmError::new("Unexpected .endopt without matching .opt")
+                                .ensure_location(&line.file, line.line_num));
+                        }
+                        ControlDirective::EndPack => {
+                            return Err(AsmError::new("Unexpected .endpack without matching .pack")
+                                .ensure_location(&line.file, line.line_num));
                         }
                     }
                 }

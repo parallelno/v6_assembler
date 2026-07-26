@@ -1,0 +1,8 @@
+[files]
+"main.asm" = '''
+.endif
+'''
+
+[expect]
+error_contains = "Unexpected .endif without matching .if"
+error_line = 1

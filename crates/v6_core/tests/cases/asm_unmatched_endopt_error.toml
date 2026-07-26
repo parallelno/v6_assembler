@@ -1,0 +1,8 @@
+[files]
+"main.asm" = '''
+.endopt
+'''
+
+[expect]
+error_contains = "Unexpected .endopt without matching .opt"
+error_line = 1
