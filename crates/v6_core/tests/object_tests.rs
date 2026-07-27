@@ -689,6 +689,26 @@ fn pack_blocks_go_into_bss_pack_nobits_section() {
 }
 
 #[test]
+fn pack_label_alias_stays_section_relative() {
+    let asm = assemble_obj(
+        ".global *\n\
+         lxi h, alias\n\
+         .pack\n\
+         base:\n\
+         .storage 2\n\
+         alias = base + 1\n\
+         .endpack\n",
+    )
+    .unwrap();
+
+    let base = asm.symbols.get_global_info("base").unwrap();
+    let alias = asm.symbols.get_global_info("alias").unwrap();
+    assert_eq!(base.value, Some(0));
+    assert_eq!(alias.value, Some(1));
+    assert_eq!(alias.section, base.section);
+}
+
+#[test]
 fn pack_dataset_obj_matches_producer_contract() {
     // The full runtime dataset emits one linker-packable section per block.
     let asm = assemble_obj(include_str!("fixtures/v6_runtime_data.asm")).unwrap();

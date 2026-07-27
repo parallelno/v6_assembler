@@ -1796,6 +1796,64 @@ impl Assembler {
                 let local_scope = c.scope_label.as_ref()
                     .and_then(|name| pack_scopes.get(&name.to_uppercase()))
                     .copied();
+                if self.output_format == OutputFormat::Obj && !c.is_local {
+                    let rv = {
+                        let symbols = &self.symbols;
+                        eval_expr_reloc(&c.expr, &|sym, is_local_sym| {
+                            let info = if is_local_sym {
+                                local_scope
+                                    .and_then(|scope| symbols.get_local_info_in_scope(sym, scope))
+                                    .or_else(|| symbols.get_local_info(sym))
+                            } else {
+                                symbols.get_global_info(sym)
+                            };
+                            match info {
+                                Some(info) => match (info.section, info.value) {
+                                    (Some(section), value) => SymValue::Section {
+                                        index: section,
+                                        offset: value.unwrap_or(0),
+                                    },
+                                    (None, Some(value)) => SymValue::Absolute(value),
+                                    (None, None) => SymValue::Undefined,
+                                },
+                                None => SymValue::Undefined,
+                            }
+                        }, 0, 0)
+                    };
+                    match rv {
+                        Ok(rv) => match rv.target {
+                            Some(crate::object::section::RelocTarget::Section(section)) => {
+                                self.symbols.define_constant_in_section(
+                                    &c.name,
+                                    rv.addend,
+                                    section,
+                                    &c.file,
+                                    c.line_num,
+                                )?;
+                            }
+                            Some(crate::object::section::RelocTarget::Symbol(_)) => {
+                                self.symbols.define_constant_deferred(
+                                    &c.name,
+                                    c.expr.clone(),
+                                    &c.file,
+                                    c.line_num,
+                                )?;
+                            }
+                            None => {
+                                self.symbols.define_constant(&c.name, rv.addend, &c.file, c.line_num)?;
+                            }
+                        },
+                        Err(_) => {
+                            self.symbols.define_constant_deferred(
+                                &c.name,
+                                c.expr.clone(),
+                                &c.file,
+                                c.line_num,
+                            )?;
+                        }
+                    }
+                    continue;
+                }
                 let resolver = |sym: &str| -> Option<i64> {
                     self.symbols.resolve(sym).or_else(|| {
                         local_scope
