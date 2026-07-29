@@ -23,6 +23,17 @@ pub struct SourceLine {
     pub line_num: usize,
     pub text: String,
     pub macro_context: Option<String>,
+    pub expansion: Vec<ExpansionSite>,
+}
+
+/// The origin of a macro expansion contributing to a source line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpansionSite {
+    pub name: String,
+    pub definition_file: String,
+    pub definition_line: usize,
+    pub invocation_file: String,
+    pub invocation_line: usize,
 }
 
 /// Read and preprocess source files
@@ -88,6 +99,7 @@ fn content_to_lines(content: &str, file_name: &str) -> Vec<SourceLine> {
                 line_num,
                 text: part,
                 macro_context: None,
+                expansion: Vec::new(),
             });
         }
     }
@@ -540,8 +552,7 @@ pub fn expand_macro(
     macro_def: &MacroDef,
     args: &[String],
     call_index: usize,
-    call_file: &str,
-    call_line: usize,
+    call_source: &SourceLine,
 ) -> AsmResult<Vec<SourceLine>> {
     let mut body_text = Vec::new();
 
@@ -561,11 +572,20 @@ pub fn expand_macro(
             // Replace parameter name with value (whole word only)
             expanded = replace_param(&expanded, &param.name, value);
         }
+        let mut expansion = call_source.expansion.clone();
+        expansion.push(ExpansionSite {
+            name: macro_def.name.clone(),
+            definition_file: macro_def.file.clone(),
+            definition_line: macro_def.line,
+            invocation_file: call_source.file.clone(),
+            invocation_line: call_source.line_num,
+        });
         body_text.push(SourceLine {
-            file: call_file.to_string(),
-            line_num: call_line,
+            file: call_source.file.clone(),
+            line_num: call_source.line_num,
             text: expanded,
             macro_context: Some(format!("{}_{}", macro_def.name, call_index)),
+            expansion,
         });
     }
 

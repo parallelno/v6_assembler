@@ -20,6 +20,7 @@ v6asm --init <name>
 | `-q`, `--quiet` | Suppress `.print` output |
 | `-V`, `--verbose` | Extra diagnostics |
 | `-l`, `--lst` | Generate a listing file (`.lst`) alongside the ROM |
+| `-g`, `--debug` | Emit DWARF v4 source metadata (requires `-f obj`) |
 | `-v`, `--version` | Print the build version string |
 | `-h`, `--help` | Print help with the program header |
 
@@ -45,6 +46,7 @@ v6asm -I libs -I shared main.asm      # search extra include directories
 v6asm main.asm -D DEBUG=1 -D VERSION=0x10  # pre-define symbols
 v6asm main.asm -D FEATURE             # pre-define FLAG=1 (boolean)
 v6asm main.asm -f obj                 # emit relocatable ELF object main.o
+v6asm -g -f obj main.asm -o main.o    # emit an object with DWARF v4 metadata
 v6asm -v                              # print version
 ```
 
@@ -53,3 +55,7 @@ v6asm -v                              # print version
 - `<name>.rom` — Vector 06c executable loaded by the emulator.
 - `<name>.o` — relocatable ELF32 object (object mode, `-f obj`) for linking with `ld.lld`. See [Object Output](object-output.md).
 - `<name>.lst` — optional listing file (enabled with `--lst`) showing addresses, emitted bytes, and source lines. See [Listing File Format](listing.md) for details.
+
+`--debug` currently applies only to object output. See [Debug Metadata](debug-metadata.md)
+for the link workflow, emitted DWARF sections, source attribution, and current
+limitations.

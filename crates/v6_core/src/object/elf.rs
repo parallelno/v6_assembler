@@ -90,6 +90,18 @@ pub struct ObjSymbol {
     pub location: SymLocation,
 }
 
+/// A non-allocating section supplied by an object-file producer, such as a
+/// DWARF debug section. Relocations may only target user sections.
+#[derive(Debug, Clone)]
+pub struct ExtraSection {
+    pub name: String,
+    pub sh_type: u32,
+    pub flags: u32,
+    pub addralign: u32,
+    pub data: Vec<u8>,
+    pub relocs: Vec<super::section::Reloc>,
+}
+
 /// A string table builder.
 struct StrTab {
     bytes: Vec<u8>,
@@ -139,18 +151,38 @@ struct OutSection {
 /// `sections` are the user sections (in order). `symbols` are the named
 /// symbols to expose in `.symtab` (section symbols are generated automatically).
 pub fn serialize(sections: &[Section], symbols: &[ObjSymbol]) -> Vec<u8> {
+    serialize_with_extra(sections, symbols, &[])
+}
+
+/// Serialize user sections plus arbitrary non-allocating metadata sections.
+pub fn serialize_with_extra(
+    sections: &[Section],
+    symbols: &[ObjSymbol],
+    extra_sections: &[ExtraSection],
+) -> Vec<u8> {
     let n_user = sections.len();
+    let n_extra = extra_sections.len();
+    let n_primary = n_user + n_extra;
 
     // Section header index layout:
     //   0                     : null
     //   1 ..= n_user          : user sections
-    //   next rela sections    : one per user section that has relocations
+    //   next extra sections   : producer-supplied metadata
+    //   next rela sections    : one per relocatable primary section
     //   symtab, strtab, shstrtab
-    let rela_for: Vec<usize> = (0..n_user)
-        .filter(|&i| !sections[i].relocs.is_empty())
-        .collect();
+    let mut rela_for: Vec<(String, usize, Vec<super::section::Reloc>)> = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        if !section.relocs.is_empty() {
+            rela_for.push((section.name.clone(), 1 + index, section.relocs.clone()));
+        }
+    }
+    for (index, section) in extra_sections.iter().enumerate() {
+        if !section.relocs.is_empty() {
+            rela_for.push((section.name.clone(), 1 + n_user + index, section.relocs.clone()));
+        }
+    }
     let n_rela = rela_for.len();
-    let symtab_idx = 1 + n_user + n_rela;
+    let symtab_idx = 1 + n_primary + n_rela;
     let strtab_idx = symtab_idx + 1;
     let shstrtab_idx = strtab_idx + 1;
 
@@ -205,9 +237,9 @@ pub fn serialize(sections: &[Section], symbols: &[ObjSymbol]) -> Vec<u8> {
 
     // ---- Build relocation sections ----
     let mut rela_data: Vec<Vec<u8>> = Vec::with_capacity(n_rela);
-    for &i in &rela_for {
+    for (_, _, relocs) in &rela_for {
         let mut buf = Vec::new();
-        for r in &sections[i].relocs {
+        for r in relocs {
             let sym_index = match &r.target {
                 // Section-relative reference uses that section's section symbol.
                 RelocTarget::Section(idx) => (1 + *idx) as u32,
@@ -260,9 +292,27 @@ pub fn serialize(sections: &[Section], symbols: &[ObjSymbol]) -> Vec<u8> {
         });
     }
 
+    // Producer-supplied metadata sections.
+    for s in extra_sections {
+        let name_off = shstrtab.add(&s.name);
+        out.push(OutSection {
+            name_off,
+            sh_type: s.sh_type,
+            flags: s.flags,
+            offset: 0,
+            size: s.data.len() as u32,
+            link: 0,
+            info: 0,
+            addralign: s.addralign.max(1),
+            entsize: 0,
+            data: s.data.clone(),
+            is_nobits: false,
+        });
+    }
+
     // rela sections
-    for (k, &i) in rela_for.iter().enumerate() {
-        let rela_name = format!(".rela{}", sections[i].name);
+    for (k, (name, target_index, _)) in rela_for.iter().enumerate() {
+        let rela_name = format!(".rela{name}");
         let name_off = shstrtab.add(&rela_name);
         let data = std::mem::take(&mut rela_data[k]);
         out.push(OutSection {
@@ -272,7 +322,7 @@ pub fn serialize(sections: &[Section], symbols: &[ObjSymbol]) -> Vec<u8> {
             offset: 0,
             size: data.len() as u32,
             link: symtab_idx as u32,
-            info: (1 + i) as u32,
+            info: *target_index as u32,
             addralign: 4,
             entsize: 12,
             data,

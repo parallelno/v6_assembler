@@ -150,6 +150,31 @@ pub struct ListingLine {
     pub macro_expansion: bool,
 }
 
+/// Kind of output represented by a debug metadata row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmissionKind {
+    Instruction,
+}
+
+/// A source-level instruction range, recorded independently of listing output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugLineRow {
+    /// Object section index, or `None` for direct ROM output.
+    pub section: Option<usize>,
+    /// Section-relative offset in object mode, or absolute address in ROM mode.
+    pub offset_or_address: u32,
+    pub byte_len: u32,
+    pub file: String,
+    pub line_num: usize,
+    pub column: u32,
+    pub is_stmt: bool,
+    pub kind: EmissionKind,
+    /// The macro invocation identity, if this row came from expansion.
+    pub macro_context: Option<String>,
+    /// Definition and invocation sites for each nested macro expansion.
+    pub expansion: Vec<crate::preprocessor::ExpansionSite>,
+}
+
 /// Assembler settings that can be modified by .setting
 #[derive(Debug, Clone)]
 pub struct AssemblerSettings {
@@ -211,6 +236,8 @@ pub struct Assembler {
     pub symbols: SymbolTable,
     pub output: OutputBuffer,
     pub listing_data: Vec<ListingLine>,
+    /// Machine-readable instruction ranges used by debug metadata writers.
+    pub debug_rows: Vec<DebugLineRow>,
     pub original_sources: Vec<OriginalSource>,
     pub pc: u16,
     pub cpu_mode: CpuMode,
@@ -260,6 +287,7 @@ impl Assembler {
             symbols: SymbolTable::new(),
             output: OutputBuffer::new(),
             listing_data: Vec::new(),
+            debug_rows: Vec::new(),
             original_sources: Vec::new(),
             pc: 0,
             cpu_mode,
@@ -298,6 +326,7 @@ impl Assembler {
         self.symbols.reset_macro_call_count();
         self.pc = 0;
         self.encoding = Encoding::default();
+        self.debug_rows.clear();
         self.reset_object_state();
         self.pass2(lines)?;
 
@@ -961,7 +990,30 @@ impl Assembler {
                     }
                 }
                 ParsedLine::Instruction { mnemonic, operands, expressions } => {
+                    let section = (self.output_format == OutputFormat::Obj).then_some(self.obj.active);
+                    let offset_or_address = match section {
+                        Some(index) => self.obj.sections[index].size,
+                        None => self.pc as u32,
+                    };
                     self.emit_instruction(mnemonic, operands, expressions)?;
+                    let end = match section {
+                        Some(index) => self.obj.sections[index].size,
+                        None => self.pc as u32,
+                    };
+                    if end > offset_or_address {
+                        self.debug_rows.push(DebugLineRow {
+                            section,
+                            offset_or_address,
+                            byte_len: end - offset_or_address,
+                            file: line.file.clone(),
+                            line_num: line.line_num,
+                            column: 0,
+                            is_stmt: true,
+                            kind: EmissionKind::Instruction,
+                            macro_context: line.macro_context.clone(),
+                            expansion: line.expansion.clone(),
+                        });
+                    }
                 }
                 ParsedLine::Directive(dir) => {
                     self.process_directive_pass2(dir, &line.file, line.line_num)?;
@@ -977,7 +1029,7 @@ impl Assembler {
         }
         let macro_def = self.symbols.get_macro(macro_name).unwrap().clone();
         let call_idx = self.symbols.macro_call_count() + 1;
-        let expanded = expand_macro(&macro_def, args, call_idx, &line.file, line.line_num)?;
+        let expanded = expand_macro(&macro_def, args, call_idx, line)?;
         self.symbols.begin_macro_expansion(macro_name);
         self.macro_depth += 1;
         let result = self.process_lines_pass1(&expanded);
@@ -992,7 +1044,7 @@ impl Assembler {
         }
         let macro_def = self.symbols.get_macro(macro_name).unwrap().clone();
         let call_idx = self.symbols.macro_call_count() + 1;
-        let expanded = expand_macro(&macro_def, args, call_idx, &line.file, line.line_num)?;
+        let expanded = expand_macro(&macro_def, args, call_idx, line)?;
         self.symbols.begin_macro_expansion(macro_name);
         self.macro_depth += 1;
         let result = self.process_lines_pass2(&expanded);

@@ -82,6 +82,10 @@ All seven `hlt` instructions share line number 62 from the source, with addresse
 
 Macro invocations are expanded similarly to loops. The listing shows each expanded instruction with the address and bytes it produces, using the line numbers from the macro definition body.
 
+This is intentionally different from DWARF debug metadata: with `-g -f obj`,
+generated instructions map to the macro invocation line so source breakpoints
+work at the call site. See [Debug Metadata](debug-metadata.md).
+
 ## Line Separator
 
 When the `\` line separator (see [syntax.md](syntax.md#line-separator)) places several statements on one source line, each statement gets its own row in the listing — all sharing the same line number. The original source text is shown only on the first row; subsequent rows leave the source column blank so the address/bytes columns line up underneath:

@@ -9,6 +9,7 @@ v6asm -i main                  # scaffold a new project
 v6asm main.asm                 # assemble → main.rom
 v6asm main.asm -l              # + listing file
 v6asm main.asm -c z80          # Z80 mnemonic mode
+v6asm main.asm -g -f obj        # relocatable object with DWARF v4 metadata
 v6asm -v                       # print build version
 ```
 
@@ -45,6 +46,8 @@ Full reference is in the [`docs/`](docs/README.md) folder:
 - [Directives](docs/directives.md) — `.org`, `.include`, `.if`, `.loop`, `.optional`, data emission, and more
 - [Macros](docs/macros.md) — `.macro` / `.endmacro`, parameters, scoping
 - [Listing Format](docs/listing.md) — `.lst` column layout and expansion behavior
+- [Object Output](docs/object-output.md) — relocatable ELF objects, sections, symbols, relocations
+- [Debug Metadata](docs/debug-metadata.md) — DWARF v4 object output and debugger workflow
 
 ### Build from source
 

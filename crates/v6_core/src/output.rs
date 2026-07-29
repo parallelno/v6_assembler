@@ -51,11 +51,14 @@ pub fn write_rom(rom: &[u8], path: &Path) -> AsmResult<()> {
 
 /// Configuration for object-file emission.
 #[derive(Debug, Clone, Default)]
-pub struct ObjConfig {}
+pub struct ObjConfig {
+    /// Emit DWARF v4 source metadata for debugger consumers.
+    pub debug: bool,
+}
 
 /// Build the ELF symbol model from the assembler's object state and serialize a
 /// relocatable ELF32 object.
-pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8>> {
+pub fn generate_object(asm: &Assembler, config: &ObjConfig) -> AsmResult<Vec<u8>> {
     let sections = &asm.obj.sections;
     let mut symbols: Vec<ObjSymbol> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -96,6 +99,21 @@ pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8
         push_named(name, SymBinding::Weak);
     }
 
+    // Preserve module-level labels for debugger lookup. Section symbols remain
+    // the relocation targets, so adding these local symbols does not alter the
+    // existing relocation model.
+    if config.debug {
+        let mut local_names: Vec<String> = asm.symbols.all_globals()
+            .values()
+            .filter(|info| info.is_code_label && !info.original_name.starts_with('@'))
+            .map(|info| info.original_name.clone())
+            .collect();
+        local_names.sort();
+        for name in &local_names {
+            push_named(name, SymBinding::Local);
+        }
+    }
+
     // `.global *` — export every module-level symbol (excluding `@`-prefixed locals).
     if asm.obj.glob_all {
         let mut all_names: Vec<String> = asm.symbols.all_globals()
@@ -118,7 +136,10 @@ pub fn generate_object(asm: &Assembler, _config: &ObjConfig) -> AsmResult<Vec<u8
         }
     }
 
-    Ok(elf::serialize(sections, &symbols))
+    let debug_sections = config.debug
+        .then(|| crate::object::dwarf::debug_sections(&asm.debug_rows, asm.project_dir()))
+        .unwrap_or_default();
+    Ok(elf::serialize_with_extra(sections, &symbols, &debug_sections))
 }
 
 /// Write a relocatable ELF object to file.

@@ -63,6 +63,10 @@ struct Cli {
     #[arg(short = 'l', long = "lst")]
     lst: bool,
 
+    /// Emit DWARF v4 debug metadata (object output only)
+    #[arg(short = 'g', long = "debug")]
+    debug: bool,
+
     /// Additional include search directories
     #[arg(short = 'I', long = "include-dir")]
     include_dirs: Vec<PathBuf>,
@@ -186,6 +190,7 @@ mod tests {
             "-a",
             "16",
             "-l",
+            "-g",
             "-o",
             "out.rom",
             "-V",
@@ -195,6 +200,7 @@ mod tests {
         assert_eq!(cli.cpu, "z80");
         assert_eq!(cli.rom_align, 16);
         assert!(cli.lst);
+        assert!(cli.debug);
         assert!(cli.verbose);
     }
 
@@ -336,6 +342,10 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         }
     };
 
+    if cli.debug && output_format != OutputFormat::Obj {
+        return Err(AsmError::new("--debug currently requires --format obj"));
+    }
+
     let mut asm = Assembler::new(cpu_mode, source_dir.clone());
     asm.quiet = cli.quiet;
     asm.output_format = output_format;
@@ -357,7 +367,7 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
                     .map_err(|e| AsmError::new(format!("Cannot create output directory: {}", e)))?;
             }
         }
-        write_object(&asm, &ObjConfig::default(), &obj_path)?;
+        write_object(&asm, &ObjConfig { debug: cli.debug }, &obj_path)?;
         let total: usize = asm.obj.sections.iter().map(|s| s.size as usize).sum();
         eprintln!(
             "OBJ: {} sections, {} bytes, written to {}",

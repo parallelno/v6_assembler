@@ -12,7 +12,7 @@ The assembler is **case-insensitive** for all identifiers:
 - **Symbols**: `Start` and `start` refer to the same label; `MAX_SIZE` and `max_size` are the same constant.
 - **Macros**: `SetPalette` and `SETPALETTE` invoke the same macro.
 
-Original case is preserved in listing output and debug symbols (`.symbols.json`).
+Original case is preserved in listing output and DWARF-enabled object symbols.
 
 ## Comments
 

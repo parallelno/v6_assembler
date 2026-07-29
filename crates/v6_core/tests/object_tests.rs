@@ -67,6 +67,32 @@ fn reloc_at(asm: &Assembler, offset: u32) -> &v6_core::object::section::Reloc {
         .unwrap_or_else(|| panic!("no relocation at offset {:#x}", offset))
 }
 
+#[test]
+fn debug_rows_track_instructions_but_not_data_directives() {
+    let asm = assemble_obj("nop\n.byte 1\nhlt\n").unwrap();
+
+    assert_eq!(asm.debug_rows.len(), 2);
+    assert_eq!(asm.debug_rows[0].section, Some(0));
+    assert_eq!(asm.debug_rows[0].offset_or_address, 0);
+    assert_eq!(asm.debug_rows[0].byte_len, 1);
+    assert_eq!(asm.debug_rows[0].line_num, 1);
+    assert_eq!(asm.debug_rows[1].offset_or_address, 2);
+    assert_eq!(asm.debug_rows[1].line_num, 3);
+}
+
+#[test]
+fn debug_rows_keep_macro_definition_and_invocation_provenance() {
+    let asm = assemble_obj(".macro pause\nnop\n.endmacro\npause()\n").unwrap();
+
+    assert_eq!(asm.debug_rows.len(), 1);
+    let row = &asm.debug_rows[0];
+    assert_eq!(row.line_num, 4);
+    assert_eq!(row.expansion.len(), 1);
+    assert_eq!(row.expansion[0].name, "pause");
+    assert_eq!(row.expansion[0].definition_line, 1);
+    assert_eq!(row.expansion[0].invocation_line, 4);
+}
+
 // ── relocation kinds ─────────────────────────────────────────────────────────
 
 #[test]
@@ -933,6 +959,33 @@ fn elf_contains_expected_sections_and_symbols() {
     assert!(names.iter().any(|n| n == "external"));
     assert!(external_undef, "external must be GLOBAL + SHN_UNDEF");
     assert!(entry_global_defined, "entry must be GLOBAL + defined");
+}
+
+#[test]
+fn debug_object_contains_dwarf_sections_and_line_relocations() {
+    let asm = assemble_obj("entry:\nnop\nhlt\n").unwrap();
+    let bytes = generate_object(&asm, &ObjConfig { debug: true }).unwrap();
+    let e_shoff = read_u32(&bytes, 32) as usize;
+    let e_shentsize = read_u16(&bytes, 46) as usize;
+    let e_shnum = read_u16(&bytes, 48) as usize;
+    let e_shstrndx = read_u16(&bytes, 50) as usize;
+    let sh = |index: usize| e_shoff + index * e_shentsize;
+    let shstr_off = read_u32(&bytes, sh(e_shstrndx) + 16) as usize;
+    let section_name = |index: usize| {
+        let start = shstr_off + read_u32(&bytes, sh(index)) as usize;
+        let end = start + bytes[start..].iter().position(|&byte| byte == 0).unwrap();
+        String::from_utf8_lossy(&bytes[start..end]).into_owned()
+    };
+
+    let names: Vec<String> = (0..e_shnum).map(section_name).collect();
+    for name in [".debug_info", ".debug_abbrev", ".debug_line", ".debug_str", ".rela.debug_line"] {
+        assert!(names.iter().any(|section| section == name), "missing {name}");
+    }
+    for name in [".debug_info", ".debug_abbrev", ".debug_line", ".debug_str"] {
+        let index = names.iter().position(|section| section == name).unwrap();
+        assert_eq!(read_u32(&bytes, sh(index) + 8), 0, "{name} must not be allocatable");
+    }
+    assert!(asm.debug_rows.iter().all(|row| row.is_stmt));
 }
 
 #[test]

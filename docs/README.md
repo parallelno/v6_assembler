@@ -10,4 +10,5 @@ Intel 8080/Z80 assembler for Vector 06c.
 4. [Macros](macros.md) — `.macro` / `.endmacro`, parameter defaults, label and constant scoping, nesting
 5. [Listing File Format](listing.md) — `.lst` column layout, address/bytes/source columns, include and loop expansion behavior
 6. [Object Output](object-output.md) — relocatable ELF objects (`-f obj`), sections, symbols, and relocations
-7. [Scripts Folder](scripts/README.md) — batch helpers for local build and publish workflows
+7. [Debug Metadata](debug-metadata.md) — DWARF v4 object output, source attribution, symbols, and debugger workflow
+8. [Scripts Folder](scripts/README.md) — batch helpers for local build and publish workflows

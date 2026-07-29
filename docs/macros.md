@@ -36,6 +36,14 @@ Constants defined inside a macro are also scoped to that macro invocation. The a
 
 Nested macros are supported (up to 32 levels deep), but you cannot open another `.macro` inside a macro body. All macro lines keep their original file/line metadata, so assembler errors still point back to the macro definition.
 
+## Debug Metadata
+
+When assembling with `-g -f obj`, DWARF instruction rows for a macro expansion
+use the macro **invocation** location. This lets a source breakpoint on a macro
+call stop in the generated instructions. The listing remains definition-oriented
+for human inspection; see [Debug Metadata](debug-metadata.md) for the complete
+debugger attribution policy.
+
 ## Example with Text Encoding
 
 ```asm
