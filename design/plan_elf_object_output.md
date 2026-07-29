@@ -302,8 +302,10 @@ everything funnels into the legacy `OutputBuffer` exactly as today.
 - **No PC-relative / GOT / PLT / dynamic linking** — V6C has none.
 - **No 32-bit relocations** — `.dword` stays constant-only.
 - **No `sym - sym` across sections** — only same-section differences fold.
-- **No DWARF** — keep the existing `.symbols.json` debug path untouched; ELF
-  `.symtab` is sufficient for linking. (Optional future: minimal STABS/line.)
+- **DWARF is implemented separately** — see
+  `design/plan_v6asm_dwarf_debug_metadata.md` and `docs/debug-metadata.md`.
+  The object-output implementation remains responsible for section, symbol,
+  and relocation mechanics used by that metadata.
 - **No change to ROM mode** — default output and all existing flags behave
   identically.
 

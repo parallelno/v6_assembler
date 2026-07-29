@@ -167,6 +167,12 @@ the object -> LLD -> ELF -> objcopy flow.
 
 ## 3. Implementation Steps
 
+> **Audit status (2026-07-29):** `[x]` means the full step is complete in this
+> source repository and has local evidence. A blank checkbox means the step is
+> incomplete or only partially implemented; its Implementation Notes identify
+> the remaining work. The packaging and feature-test repositories named by
+> later steps are not present in this checkout.
+
 ### Step 3.1 - Read references and freeze compatibility [ ]
 
 Read upstream `docs/cli.md`, `docs/object-output.md`, `docs/listing.md`,
@@ -177,7 +183,10 @@ shared V6C DWARF/relocation contract in `plan_source_debug_metadata.md`.
 Capture golden hashes for representative ROM and object outputs without `-g`.
 These hashes are non-regression gates.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Source, object-output, CLI, listing, macro, and
+> serializer paths were reviewed before implementation. Golden ROM/object
+> hashes and the referenced shared final-ELF contract have not been captured
+> here, so this compatibility gate is incomplete.
 
 ### Step 3.2 - Add failing metadata-model tests [ ]
 
@@ -189,7 +198,12 @@ Assert the intended `DebugLineRow` values before implementing serialization.
 These tests must demonstrate the current inability to retain section identity
 and macro invocation provenance.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Added tests for instruction-only rows, emitted
+> DWARF sections/relocations, macro definition/invocation provenance, split
+> statements, loops, data/storage/alignment ranges, nested includes with
+> duplicate basenames, and retained optional sections. Nested macro expansion,
+> discarded optional blocks, and a deliberately failing pre-implementation
+> model test remain missing.
 
 ### Step 3.3 - Enrich source and expansion provenance [ ]
 
@@ -204,7 +218,13 @@ compilation directory separately, and keep path comparison independent of
 host separator/case rules. Add tests for Windows paths and two includes with
 the same basename.
 
-> **Implementation Notes**:
+> **Implementation Notes**: `SourceLine` now carries a structured macro
+> `ExpansionSite` chain and `DebugLineRow` retains it while preserving the
+> legacy macro marker. Loop iterations now add an expansion site with their
+> iteration number, and split source statements retain their physical column
+> offsets. Path separators are normalized for emitted debug data, and duplicate
+> basename include coverage is tested. Windows-path tests and host-independent
+> path comparison remain unimplemented.
 
 ### Step 3.4 - Record section-relative debug rows in pass 2 [ ]
 
@@ -216,9 +236,15 @@ For ROM mode capture absolute addresses. Keep `ListingLine` behavior and
 listing snapshots unchanged. Ensure pass reset and optional-section layout do
 not leak duplicate rows between passes.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Pass 2 records instruction rows with the active
+> section, pre-emission offset, emitted byte length, source location, physical
+> lexer column, and expansion chain; the collection is reset before pass 2.
+> Data, storage, and alignment ranges are retained as non-statement rows, and
+> direct ROM rows use absolute addresses. Nested-include source identity and
+> retained optional-section layout are now covered. Full directive-kind
+> coverage and discarded-optional regression coverage remain unfinished.
 
-### Step 3.5 - Add a minimal DWARF v4 encoder [ ]
+### Step 3.5 - Add a minimal DWARF v4 encoder [x]
 
 Implement small, independently tested encoders for ULEB128/SLEB128, initial
 lengths, abbreviations, compile-unit DIEs, file/directory tables, and line
@@ -230,9 +256,14 @@ subset.
 Use deterministic ordering for directories, files, strings, rows, and
 compilation units. End every discontiguous code section/sequence correctly.
 
-> **Implementation Notes**:
+> **Implementation Notes**: A local DWARF v4 writer emits the four requested
+> debug sections, deterministic directory/file/string tables, and
+> address-ordered line rows with a terminated sequence per section. Local
+> structural tests cover initial lengths, compilation-unit data, abbreviations,
+> line-table columns, object relocations, and direct-ROM absolute addresses.
+> LLVM consumer interoperability remains covered by Step 3.9.
 
-### Step 3.6 - Generalize ELF serialization for debug sections [ ]
+### Step 3.6 - Generalize ELF serialization for debug sections [x]
 
 Extend `object/elf.rs` so callers can add non-allocating PROGBITS sections,
 explicit alignment, links, entry sizes, and RELA sections without hard-coding
@@ -243,9 +274,12 @@ Emit `.debug_info`, `.debug_abbrev`, `.debug_line`, `.debug_str`, and required
 `.rela.debug_*` sections only under `-g`. Verify section flags are zero and no
 debug bytes are allocatable.
 
-> **Implementation Notes**:
+> **Implementation Notes**: `serialize_with_extra` supports non-allocating
+> extra sections, alignment, caller-controlled links, info fields, entry sizes,
+> and RELA sections. `-g` emits the four DWARF sections with zero flags; local
+> tests assert the resulting ELF section-header metadata.
 
-### Step 3.7 - Complete debugger-visible ELF symbols [ ]
+### Step 3.7 - Complete debugger-visible ELF symbols [x]
 
 Add ordinary module-level labels to `.symtab` with `STB_LOCAL` unless declared
 global/weak. Preserve current relocation optimization through section symbols;
@@ -258,9 +292,15 @@ the size unambiguous. Define deterministic names for scoped local and macro
 labels or deliberately omit only those that cannot be represented without
 collision; test and document the rule.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Debug objects add module-level labels as
+> `STB_LOCAL` unless already global or weak. Labels beginning executable ranges
+> are `STT_FUNC`, labels beginning data/storage ranges are `STT_OBJECT`, and
+> both receive deterministic extents bounded by the next module label or their
+> emitted source range. Scoped `@` and macro-generated names are deliberately
+> omitted because their source spelling is not unique; the documented omission
+> rule and local ELF symbol-table tests cover that policy.
 
-### Step 3.8 - Add CLI and object-mode output [ ]
+### Step 3.8 - Add CLI and object-mode output [x]
 
 Add `-g` / `--debug`. In the first milestone require `--format obj` (or accept
 ROM mode only when `--debug-elf` is implemented). Keep debug output opt-in and
@@ -275,7 +315,12 @@ ld.lld -m elf32v6c -T v6c.ld game.o -o game.elf
 llvm-objcopy -O binary game.elf game.rom
 ```
 
-> **Implementation Notes**:
+> **Implementation Notes**: Implemented `-g`/`--debug`, restricted it to
+> object generation when `-f obj` is selected, and added direct-ROM companion
+> generation when `-g` is used without object output. `--debug-elf` selects an
+> explicit ROM companion path. Unit tests cover argument parsing;
+> `target/release/v6asm.exe --help` was verified on 2026-07-29 and lists the
+> option. Both workflows are documented in `docs/debug-metadata.md`.
 
 ### Step 3.9 - LLVM interoperability tests [ ]
 
@@ -287,7 +332,9 @@ relocation resolution, and `--gc-sections` removal.
 Include multiple source ranges for one loop/macro line and verify the shared
 adapter fixture resolves every address.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Not implemented. `llvm-readelf` is unavailable in
+> this environment, and there is no CI fixture or test script for standalone,
+> mixed Clang, source-address, relocation, or `--gc-sections` verification.
 
 ### Step 3.10 - Implement direct ROM companion ELF [ ]
 
@@ -299,7 +346,12 @@ consumer-side implicit bias.
 Compare ROM bytes from a debug and non-debug invocation and reconstruct the
 same bytes from the companion ELF using the adapter identity checker.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Implemented the sibling `.elf` default,
+> `--debug-elf`, and an `ET_EXEC` companion containing an allocatable `.text`
+> image at the first emitted ROM address plus absolute-address DWARF rows. The
+> companion reuses `generate_rom`, and a regression test verifies its `.text`
+> bytes match the ROM exactly. Sparse `.org` gaps are zero-filled within that
+> contiguous image. The external adapter identity check remains unimplemented.
 
 ### Step 3.11 - Build [ ]
 
@@ -307,7 +359,13 @@ Run `cargo build --release` (or upstream `scripts/build.bat`) and ensure the
 packaged CLI help reflects debug options. Build LLVM tools required by the
 interoperability fixtures.
 
-> **Implementation Notes**:
+> **Implementation Notes**: `cargo build --release` and the workspace build
+> script completed successfully. The freshly rebuilt source release
+> (`2026.07.29-6dab24c`) lists `-g` and `--debug-elf`, describes the direct-ROM
+> companion, and was smoke-tested to emit a ROM plus valid ELF companion. The
+> separately packaged `tools/v6asm/v6asm.exe` is not present in this checkout
+> and remains unsynchronized; LLVM tools were not installed or built, so the
+> complete build step remains open.
 
 ### Step 3.12 - Unit and integration tests [ ]
 
@@ -320,7 +378,10 @@ Set a performance gate on a representative macro/loop-heavy project. Debug
 recording and DWARF serialization should remain linear in emitted rows; record
 assembly time, peak memory, object size, and debug-section size.
 
-> **Implementation Notes**:
+> **Implementation Notes**: `cargo test -p v6_core` and `cargo test
+> --workspace` passed after the implementation. Required malformed-input,
+> 64-KiB, deep-provenance, mapping, performance, memory, and object-size tests
+> have not been added.
 
 ### Step 3.13 - V6C end-to-end regression [ ]
 
@@ -332,7 +393,9 @@ plan.
 Run `python tests/run_all.py` in this repository and confirm all non-debug ROM
 goldens remain unchanged.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Not implemented. This source checkout has no
+> `tools/` or `tests/` feature-test tree, no packaged executable update, and
+> no v6emul or mixed-language end-to-end run.
 
 ### Step 3.14 - Verification assembly steps from `tests/features/README.md` [ ]
 
@@ -340,7 +403,9 @@ Follow the documented feature-test compile, v6asm object assembly, LLD link,
 objcopy, and v6emul steps. Record expected source/address mappings for main
 file, include, macro invocation, and loop body.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Not implemented. The referenced
+> `tests/features/README.md` is absent from this checkout, so no documented
+> feature-test assembly/link/emulator verification was run.
 
 ### Step 3.15 - Make sure `result.txt` is created [ ]
 
@@ -349,9 +414,10 @@ Create/update the selected feature's `result.txt` according to
 and line-table excerpts, ROM digest, mapped breakpoint addresses, stop PCs,
 emulator output, and timing/size measurements.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Not implemented. No feature-test directory or
+> selected `result.txt` exists in this checkout.
 
-### Step 3.16 - Documentation and stale-claim cleanup [ ]
+### Step 3.16 - Documentation and stale-claim cleanup [x]
 
 Update upstream CLI, object-output, listing, macro, and README documentation.
 Remove or correct the `.symbols.json` statements unless that artifact is
@@ -361,7 +427,13 @@ macro attribution, direct-ROM limitations, symbol inclusion, and stripping.
 Mirror the released docs under `tools/v6asm/docs/`. Mark completed steps `[x]`
 and fill every Implementation Notes block.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Updated CLI, object-output, listing, macro,
+> syntax, root README, and docs index pages; removed stale `.symbols.json`
+> claims; and added `docs/debug-metadata.md` for the DWARF workflow, paths,
+> macro attribution, symbol policy, stripping guidance, and the direct-ROM
+> companion workflow.
+> A `tools/v6asm/docs/` mirror is not applicable in this source repository and
+> must be handled when a separate packaging repository is released.
 
 ### Step 3.17 - Sync mirror [ ]
 
@@ -371,7 +443,9 @@ run the binary `--version`/`--help` smoke tests, and then run
 `pwsh scripts/sync_llvm_mirror.ps1` for any shared V6C relocation/test changes
 made by the main plan.
 
-> **Implementation Notes**:
+> **Implementation Notes**: Not implemented. No separate mirror, pinned
+> release artifact, `tools/v6asm/v6asm.exe`, or `sync_llvm_mirror.ps1` exists
+> in this checkout.
 
 ## 4. Expected Results
 

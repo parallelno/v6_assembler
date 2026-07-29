@@ -21,19 +21,30 @@ pub struct OriginalSource {
 pub struct SourceLine {
     pub file: String,
     pub line_num: usize,
+    /// Zero-based offset of this split statement within its physical line.
+    pub column_offset: usize,
     pub text: String,
     pub macro_context: Option<String>,
     pub expansion: Vec<ExpansionSite>,
 }
 
-/// The origin of a macro expansion contributing to a source line.
+/// The kind of source expansion contributing to a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpansionKind {
+    Macro,
+    Loop,
+}
+
+/// The origin of an expansion contributing to a source line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpansionSite {
-    pub name: String,
+    pub kind: ExpansionKind,
+    pub name: Option<String>,
     pub definition_file: String,
     pub definition_line: usize,
     pub invocation_file: String,
     pub invocation_line: usize,
+    pub iteration: Option<usize>,
 }
 
 /// Read and preprocess source files
@@ -93,10 +104,11 @@ fn content_to_lines(content: &str, file_name: &str) -> Vec<SourceLine> {
     let mut result = Vec::new();
     for (i, line) in content.lines().enumerate() {
         let line_num = i + 1;
-        for part in split_on_backslash(line) {
+        for (part, column_offset) in split_on_backslash_with_offsets(line) {
             result.push(SourceLine {
                 file: file_name.to_string(),
                 line_num,
+            column_offset,
                 text: part,
                 macro_context: None,
                 expansion: Vec::new(),
@@ -108,7 +120,16 @@ fn content_to_lines(content: &str, file_name: &str) -> Vec<SourceLine> {
 
 /// Split a physical source line on `\` line separators, ignoring backslashes
 /// inside string/char literals or after a line-comment marker (`;` or `//`).
+#[allow(dead_code)]
 fn split_on_backslash(line: &str) -> Vec<String> {
+    split_on_backslash_with_offsets(line)
+        .into_iter()
+        .map(|(part, _)| part)
+        .collect()
+}
+
+/// Split a physical source line and retain each statement's character offset.
+fn split_on_backslash_with_offsets(line: &str) -> Vec<(String, usize)> {
     let chars: Vec<char> = line.chars().collect();
     let mut parts = Vec::new();
     let mut start = 0usize;
@@ -149,7 +170,7 @@ fn split_on_backslash(line: &str) -> Vec<String> {
         }
 
         if c == '\\' {
-            parts.push(chars[start..i].iter().collect());
+            parts.push((chars[start..i].iter().collect(), start));
             i += 1;
             start = i;
             continue;
@@ -158,7 +179,7 @@ fn split_on_backslash(line: &str) -> Vec<String> {
         i += 1;
     }
 
-    parts.push(chars[start..].iter().collect());
+    parts.push((chars[start..].iter().collect(), start));
     parts
 }
 
@@ -574,15 +595,18 @@ pub fn expand_macro(
         }
         let mut expansion = call_source.expansion.clone();
         expansion.push(ExpansionSite {
-            name: macro_def.name.clone(),
+            kind: ExpansionKind::Macro,
+            name: Some(macro_def.name.clone()),
             definition_file: macro_def.file.clone(),
             definition_line: macro_def.line,
             invocation_file: call_source.file.clone(),
             invocation_line: call_source.line_num,
+            iteration: None,
         });
         body_text.push(SourceLine {
             file: call_source.file.clone(),
             line_num: call_source.line_num,
+            column_offset: call_source.column_offset,
             text: expanded,
             macro_context: Some(format!("{}_{}", macro_def.name, call_index)),
             expansion,

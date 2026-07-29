@@ -42,7 +42,7 @@ llvm-readelf -h -S -s -r main.o
 Pass `-g` with `-f obj` to emit a minimal DWARF v4 compilation unit and line
 table. Debug sections are non-allocating and are omitted unless requested. See
 [Debug Metadata](debug-metadata.md) for the full linker workflow, source-line
-policy, symbols, inspection commands, and direct-ROM limitation.
+policy, symbols, inspection commands, and direct-ROM companion workflow.
 
 ## Section model
 
@@ -230,6 +230,6 @@ ld.lld interruption.o other.o -T v6c.ld -o program.elf
 - No PC-relative, GOT, PLT, or dynamic linking.
 - No 32-bit relocations (`.dword` stays constant-only).
 - No `sym - sym` across sections — only same-section differences fold.
-- Direct-ROM debug companions are not yet emitted. See [Debug Metadata](debug-metadata.md)
-  for the object -> LLD -> ELF debugging workflow.
+- Direct-ROM `ET_EXEC` debug companions are available with `-g`; see
+  [Debug Metadata](debug-metadata.md) for both direct-ROM and object workflows.
 - ROM mode and all existing flags behave identically.

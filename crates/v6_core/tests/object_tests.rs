@@ -8,10 +8,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use v6_core::assembler::{Assembler, OutputFormat};
+use v6_core::assembler::{Assembler, EmissionKind, OutputFormat};
 use v6_core::diagnostics::AsmError;
-use v6_core::object::section::{RelocKind, RelocTarget};
-use v6_core::output::{generate_object, ObjConfig};
+use v6_core::object::elf::{serialize_with_extra, ExtraSection};
+use v6_core::object::section::{RelocKind, RelocTarget, SHT_PROGBITS};
+use v6_core::output::{generate_debug_companion, generate_object, generate_rom, ObjConfig, RomConfig};
 use v6_core::preprocessor::preprocess;
 use v6_core::project::CpuMode;
 
@@ -58,6 +59,20 @@ fn assemble_obj(source: &str) -> Result<Assembler, AsmError> {
     Ok(asm)
 }
 
+fn assemble_rom(source: &str) -> Result<Assembler, AsmError> {
+    let dir = TempDir::new();
+    let main_path = dir.root.join("main.asm");
+    fs::write(&main_path, source).unwrap();
+
+    let mut asm = Assembler::new(CpuMode::I8080, dir.root.clone());
+    asm.quiet = true;
+    let lines = preprocess(&main_path, &dir.root, &[], &mut asm.symbols, &|path| {
+        fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
+    })?;
+    asm.assemble(&lines)?;
+    Ok(asm)
+}
+
 /// Find the relocation in section 0 whose fixup offset equals `offset`.
 fn reloc_at(asm: &Assembler, offset: u32) -> &v6_core::object::section::Reloc {
     asm.obj.sections[0]
@@ -70,14 +85,134 @@ fn reloc_at(asm: &Assembler, offset: u32) -> &v6_core::object::section::Reloc {
 #[test]
 fn debug_rows_track_instructions_but_not_data_directives() {
     let asm = assemble_obj("nop\n.byte 1\nhlt\n").unwrap();
+    let instructions: Vec<_> = asm.debug_rows.iter()
+        .filter(|row| row.kind == EmissionKind::Instruction)
+        .collect();
 
-    assert_eq!(asm.debug_rows.len(), 2);
-    assert_eq!(asm.debug_rows[0].section, Some(0));
-    assert_eq!(asm.debug_rows[0].offset_or_address, 0);
-    assert_eq!(asm.debug_rows[0].byte_len, 1);
-    assert_eq!(asm.debug_rows[0].line_num, 1);
-    assert_eq!(asm.debug_rows[1].offset_or_address, 2);
-    assert_eq!(asm.debug_rows[1].line_num, 3);
+    assert_eq!(instructions.len(), 2);
+    assert_eq!(instructions[0].section, Some(0));
+    assert_eq!(instructions[0].offset_or_address, 0);
+    assert_eq!(instructions[0].byte_len, 1);
+    assert_eq!(instructions[0].line_num, 1);
+    assert_eq!(instructions[1].offset_or_address, 2);
+    assert_eq!(instructions[1].line_num, 3);
+    assert!(asm.debug_rows.iter().any(|row| row.kind == EmissionKind::Data && !row.is_stmt));
+}
+
+#[test]
+fn debug_rows_preserve_nested_include_paths_and_optional_sections() {
+    let dir = TempDir::new();
+    fs::create_dir_all(dir.root.join("dir_a")).unwrap();
+    fs::create_dir_all(dir.root.join("dir_b")).unwrap();
+    let main_path = dir.root.join("main.asm");
+    fs::write(
+        &main_path,
+        ".include \"dir_a/shared.asm\"\n\
+         .include \"dir_b/shared.asm\"\n\
+         entry:\n\
+         call feature\n\
+         .optional\n\
+         feature:\n\
+         nop\n\
+         .endoptional\n",
+    )
+    .unwrap();
+    fs::write(dir.root.join("dir_a/shared.asm"), ".include \"nested.asm\"\nnop\n").unwrap();
+    fs::write(dir.root.join("dir_a/nested.asm"), "hlt\n").unwrap();
+    fs::write(dir.root.join("dir_b/shared.asm"), "nop\n").unwrap();
+
+    let mut asm = Assembler::new(CpuMode::I8080, dir.root.clone());
+    asm.quiet = true;
+    asm.output_format = OutputFormat::Obj;
+    let lines = preprocess(&main_path, &dir.root, &[], &mut asm.symbols, &|path| {
+        fs::read_to_string(path).map_err(|err| AsmError::new(err.to_string()))
+    })
+    .unwrap();
+    asm.assemble(&lines).unwrap();
+
+    let files: Vec<_> = asm.debug_rows.iter().map(|row| row.file.as_str()).collect();
+    assert!(files.contains(&"dir_a/nested.asm"));
+    assert!(files.contains(&"dir_a/shared.asm"));
+    assert!(files.contains(&"dir_b/shared.asm"));
+    assert!(asm.debug_rows.iter().any(|row| {
+        row.file == "main.asm" && row.line_num == 7 && row.section != Some(0)
+    }));
+    assert!(asm.debug_rows.iter().all(|row| row.is_stmt));
+}
+
+#[test]
+fn debug_symbols_have_function_and_data_extents() {
+    let asm = assemble_obj("entry:\nnop\nnext:\nhlt\ndata:\n.byte 1, 2, 3\n").unwrap();
+    let bytes = generate_object(&asm, &ObjConfig { debug: true }).unwrap();
+    let e_shoff = read_u32(&bytes, 32) as usize;
+    let e_shentsize = read_u16(&bytes, 46) as usize;
+    let e_shnum = read_u16(&bytes, 48) as usize;
+    let e_shstrndx = read_u16(&bytes, 50) as usize;
+    let sh = |index: usize| e_shoff + index * e_shentsize;
+    let shstr_off = read_u32(&bytes, sh(e_shstrndx) + 16) as usize;
+    let section_name = |index: usize| {
+        let start = shstr_off + read_u32(&bytes, sh(index)) as usize;
+        let end = start + bytes[start..].iter().position(|&byte| byte == 0).unwrap();
+        String::from_utf8_lossy(&bytes[start..end]).into_owned()
+    };
+    let names: Vec<String> = (0..e_shnum).map(section_name).collect();
+    let symtab_index = names.iter().position(|name| name == ".symtab").unwrap();
+    let strtab_index = names.iter().position(|name| name == ".strtab").unwrap();
+    let symtab_off = read_u32(&bytes, sh(symtab_index) + 16) as usize;
+    let symtab_size = read_u32(&bytes, sh(symtab_index) + 20) as usize;
+    let strtab_off = read_u32(&bytes, sh(strtab_index) + 16) as usize;
+
+    let mut symbols = std::collections::HashMap::new();
+    for index in 0..symtab_size / 16 {
+        let base = symtab_off + index * 16;
+        let name_start = strtab_off + read_u32(&bytes, base) as usize;
+        let name_end = name_start + bytes[name_start..].iter().position(|&byte| byte == 0).unwrap();
+        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
+        symbols.insert(name, (read_u32(&bytes, base + 8), bytes[base + 12] & 0x0f));
+    }
+
+    assert_eq!(symbols["entry"], (1, 2));
+    assert_eq!(symbols["next"], (1, 2));
+    assert_eq!(symbols["data"], (3, 1));
+}
+
+#[test]
+fn extra_sections_preserve_explicit_elf_metadata() {
+    let asm = assemble_obj("nop\n").unwrap();
+    let bytes = serialize_with_extra(
+        &asm.obj.sections,
+        &[],
+        &[ExtraSection {
+            name: ".debug_custom".to_string(),
+            sh_type: SHT_PROGBITS,
+            flags: 0,
+            addralign: 8,
+            link: 3,
+            info: 4,
+            entsize: 6,
+            data: vec![1, 2, 3],
+            relocs: Vec::new(),
+        }],
+    );
+    let e_shoff = read_u32(&bytes, 32) as usize;
+    let e_shentsize = read_u16(&bytes, 46) as usize;
+    let e_shnum = read_u16(&bytes, 48) as usize;
+    let e_shstrndx = read_u16(&bytes, 50) as usize;
+    let sh = |index: usize| e_shoff + index * e_shentsize;
+    let shstr_off = read_u32(&bytes, sh(e_shstrndx) + 16) as usize;
+    let section_name = |index: usize| {
+        let start = shstr_off + read_u32(&bytes, sh(index)) as usize;
+        let end = start + bytes[start..].iter().position(|&byte| byte == 0).unwrap();
+        String::from_utf8_lossy(&bytes[start..end]).into_owned()
+    };
+    let custom = (0..e_shnum)
+        .find(|&index| section_name(index) == ".debug_custom")
+        .unwrap();
+
+    assert_eq!(read_u32(&bytes, sh(custom) + 24), 3);
+    assert_eq!(read_u32(&bytes, sh(custom) + 28), 4);
+    assert_eq!(read_u32(&bytes, sh(custom) + 32), 8);
+    assert_eq!(read_u32(&bytes, sh(custom) + 36), 6);
 }
 
 #[test]
@@ -88,9 +223,29 @@ fn debug_rows_keep_macro_definition_and_invocation_provenance() {
     let row = &asm.debug_rows[0];
     assert_eq!(row.line_num, 4);
     assert_eq!(row.expansion.len(), 1);
-    assert_eq!(row.expansion[0].name, "pause");
+    assert_eq!(row.expansion[0].name.as_deref(), Some("pause"));
     assert_eq!(row.expansion[0].definition_line, 1);
     assert_eq!(row.expansion[0].invocation_line, 4);
+}
+
+#[test]
+fn debug_rows_capture_columns_loop_provenance_and_data_ranges() {
+    let asm = assemble_obj(".loop 2\n  nop\n.endloop\n  nop \\ hlt\n.byte 1\n.align 4\n").unwrap();
+
+    let instructions: Vec<_> = asm.debug_rows.iter()
+        .filter(|row| row.kind == EmissionKind::Instruction)
+        .collect();
+    assert_eq!(instructions.len(), 4);
+    assert_eq!(instructions[0].column, 3);
+    assert_eq!(instructions[0].expansion[0].iteration, Some(0));
+    assert_eq!(instructions[1].expansion[0].iteration, Some(1));
+    assert_eq!(instructions[2].line_num, 4);
+    assert_eq!(instructions[3].line_num, 4);
+    assert_eq!(instructions[2].column, 3);
+    assert_eq!(instructions[3].column, 9);
+
+    assert!(asm.debug_rows.iter().any(|row| row.kind == EmissionKind::Data && !row.is_stmt));
+    assert!(asm.debug_rows.iter().any(|row| row.kind == EmissionKind::Padding && !row.is_stmt));
 }
 
 // ── relocation kinds ─────────────────────────────────────────────────────────
@@ -986,6 +1141,35 @@ fn debug_object_contains_dwarf_sections_and_line_relocations() {
         assert_eq!(read_u32(&bytes, sh(index) + 8), 0, "{name} must not be allocatable");
     }
     assert!(asm.debug_rows.iter().all(|row| row.is_stmt));
+}
+
+#[test]
+fn rom_debug_companion_is_an_absolute_address_executable() {
+    let asm = assemble_rom(".org 0x100\nentry:\nnop\nhlt\n").unwrap();
+    let bytes = generate_debug_companion(&asm, &RomConfig::default());
+    assert_eq!(read_u16(&bytes, 16), 2, "ET_EXEC");
+
+    let e_shoff = read_u32(&bytes, 32) as usize;
+    let e_shentsize = read_u16(&bytes, 46) as usize;
+    let e_shnum = read_u16(&bytes, 48) as usize;
+    let e_shstrndx = read_u16(&bytes, 50) as usize;
+    let sh = |index: usize| e_shoff + index * e_shentsize;
+    let shstr_off = read_u32(&bytes, sh(e_shstrndx) + 16) as usize;
+    let section_name = |index: usize| {
+        let start = shstr_off + read_u32(&bytes, sh(index)) as usize;
+        let end = start + bytes[start..].iter().position(|&byte| byte == 0).unwrap();
+        String::from_utf8_lossy(&bytes[start..end]).into_owned()
+    };
+    let names: Vec<String> = (0..e_shnum).map(section_name).collect();
+    let text_index = names.iter().position(|name| name == ".text").unwrap();
+    assert_eq!(read_u32(&bytes, sh(text_index) + 12), 0x100);
+    let text_offset = read_u32(&bytes, sh(text_index) + 16) as usize;
+    let text_size = read_u32(&bytes, sh(text_index) + 20) as usize;
+    assert_eq!(&bytes[text_offset..text_offset + text_size], generate_rom(&asm, &RomConfig::default()));
+    for name in [".debug_info", ".debug_abbrev", ".debug_line", ".debug_str"] {
+        assert!(names.iter().any(|section| section == name), "missing {name}");
+    }
+    assert!(!names.iter().any(|section| section == ".rela.debug_line"));
 }
 
 #[test]

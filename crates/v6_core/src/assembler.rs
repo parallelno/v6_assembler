@@ -5,7 +5,7 @@ use crate::diagnostics::{AsmError, AsmResult, SourceLocation};
 use crate::encoding::{Encoding, EncodingCase, EncodingType};
 use crate::expr::{eval_expr, eval_expr_reloc, ByteOp, Expr, RelocValue, SymValue};
 use crate::instructions::{encode_instruction, ParsedOperand};
-use crate::lexer::tokenize_line;
+use crate::lexer::{tokenize_line, LocatedToken, Token};
 use crate::object::section::{Reloc, RelocKind, Section};
 use crate::parser::{self, Directive, ParsedLine, PackKind, PrintArg, TextItem};
 use crate::preprocessor::{SourceLine, OriginalSource, expand_macro, parse_macro_invocation};
@@ -154,6 +154,9 @@ pub struct ListingLine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmissionKind {
     Instruction,
+    Data,
+    Storage,
+    Padding,
 }
 
 /// A source-level instruction range, recorded independently of listing output.
@@ -783,8 +786,20 @@ impl Assembler {
                                 byte_count: 0,
                                 macro_expansion: line.macro_context.is_some(),
                             });
-                            for _ in 0..count as usize {
-                                self.process_lines_pass2(&lines[i + 1..end])?;
+                            for iteration in 0..count as usize {
+                                let mut body = lines[i + 1..end].to_vec();
+                                for body_line in &mut body {
+                                    body_line.expansion.push(crate::preprocessor::ExpansionSite {
+                                        kind: crate::preprocessor::ExpansionKind::Loop,
+                                        name: None,
+                                        definition_file: line.file.clone(),
+                                        definition_line: line.line_num,
+                                        invocation_file: line.file.clone(),
+                                        invocation_line: line.line_num,
+                                        iteration: Some(iteration),
+                                    });
+                                }
+                                self.process_lines_pass2(&body)?;
                             }
                             // Record the closing .endl/.endloop
                             let end_line = &lines[end];
@@ -883,7 +898,7 @@ impl Assembler {
                 }
             }
 
-            self.process_parsed_line_pass2(line, &parsed)
+            self.process_parsed_line_pass2(line, &parsed, &tokens)
                 .map_err(|e| e.ensure_location(&line.file, line.line_num))?;
             let byte_count = self.output.write_count() - wc_before;
             self.listing_data.push(ListingLine {
@@ -899,7 +914,12 @@ impl Assembler {
         Ok(())
     }
 
-    fn process_parsed_line_pass2(&mut self, line: &SourceLine, parsed: &[ParsedLine]) -> AsmResult<()> {
+    fn process_parsed_line_pass2(
+        &mut self,
+        line: &SourceLine,
+        parsed: &[ParsedLine],
+        tokens: &[LocatedToken],
+    ) -> AsmResult<()> {
         // Capture scope before any Label on this line changes it (see pass1 comment).
         let pre_label_scope = self.symbols.current_scope();
 
@@ -990,37 +1010,73 @@ impl Assembler {
                     }
                 }
                 ParsedLine::Instruction { mnemonic, operands, expressions } => {
-                    let section = (self.output_format == OutputFormat::Obj).then_some(self.obj.active);
-                    let offset_or_address = match section {
-                        Some(index) => self.obj.sections[index].size,
-                        None => self.pc as u32,
-                    };
+                    let (section, offset_or_address) = self.debug_position();
                     self.emit_instruction(mnemonic, operands, expressions)?;
-                    let end = match section {
-                        Some(index) => self.obj.sections[index].size,
-                        None => self.pc as u32,
-                    };
-                    if end > offset_or_address {
-                        self.debug_rows.push(DebugLineRow {
-                            section,
-                            offset_or_address,
-                            byte_len: end - offset_or_address,
-                            file: line.file.clone(),
-                            line_num: line.line_num,
-                            column: 0,
-                            is_stmt: true,
-                            kind: EmissionKind::Instruction,
-                            macro_context: line.macro_context.clone(),
-                            expansion: line.expansion.clone(),
-                        });
-                    }
+                    self.record_debug_row(
+                        line,
+                        section,
+                        offset_or_address,
+                        line.column_offset as u32 + instruction_column(tokens, mnemonic),
+                        true,
+                        EmissionKind::Instruction,
+                    );
                 }
                 ParsedLine::Directive(dir) => {
+                    let kind = directive_emission_kind(dir);
+                    let (section, offset_or_address) = self.debug_position();
                     self.process_directive_pass2(dir, &line.file, line.line_num)?;
+                    if let Some(kind) = kind {
+                        self.record_debug_row(
+                            line,
+                            section,
+                            offset_or_address,
+                            line.column_offset as u32 + tokens.first().map(|token| token.loc.col as u32).unwrap_or(0),
+                            false,
+                            kind,
+                        );
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    fn debug_position(&self) -> (Option<usize>, u32) {
+        let section = (self.output_format == OutputFormat::Obj).then_some(self.obj.active);
+        let offset_or_address = match section {
+            Some(index) => self.obj.sections[index].size,
+            None => self.pc as u32,
+        };
+        (section, offset_or_address)
+    }
+
+    fn record_debug_row(
+        &mut self,
+        line: &SourceLine,
+        section: Option<usize>,
+        offset_or_address: u32,
+        column: u32,
+        is_stmt: bool,
+        kind: EmissionKind,
+    ) {
+        let end = match section {
+            Some(index) => self.obj.sections[index].size,
+            None => self.pc as u32,
+        };
+        if end > offset_or_address {
+            self.debug_rows.push(DebugLineRow {
+                section,
+                offset_or_address,
+                byte_len: end - offset_or_address,
+                file: line.file.clone(),
+                line_num: line.line_num,
+                column,
+                is_stmt,
+                kind,
+                macro_context: line.macro_context.clone(),
+                expansion: line.expansion.clone(),
+            });
+        }
     }
 
     fn expand_macro_pass1(&mut self, line: &SourceLine, macro_name: &str, args: &[String]) -> AsmResult<()> {
@@ -2259,6 +2315,24 @@ enum ControlDirective<'a> {
     EndOptional,
     Pack,
     EndPack,
+}
+
+fn instruction_column(tokens: &[LocatedToken], mnemonic: &str) -> u32 {
+    tokens.iter()
+        .find_map(|token| match &token.value {
+            Token::Identifier(value) if value.eq_ignore_ascii_case(mnemonic) => Some(token.loc.col as u32),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+fn directive_emission_kind(dir: &Directive) -> Option<EmissionKind> {
+    match dir {
+        Directive::Byte(_) | Directive::Word(_) | Directive::Dword(_) | Directive::Text(_) | Directive::IncBin { .. } => Some(EmissionKind::Data),
+        Directive::Storage { .. } => Some(EmissionKind::Storage),
+        Directive::Align(_) => Some(EmissionKind::Padding),
+        _ => None,
+    }
 }
 
 /// The 0x100-byte alignment/window domain used by `.pack` blocks.

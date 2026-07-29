@@ -1,4 +1,4 @@
-//! Minimal DWARF v4 metadata for relocatable V6C objects.
+//! Minimal DWARF v4 metadata for relocatable V6C objects and direct-ROM companions.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,6 +11,7 @@ use super::section::{Reloc, RelocKind, RelocTarget, SHT_PROGBITS};
 const DW_LNS_COPY: u8 = 1;
 const DW_LNS_ADVANCE_LINE: u8 = 3;
 const DW_LNS_SET_FILE: u8 = 4;
+const DW_LNS_SET_COLUMN: u8 = 5;
 const DW_LNE_END_SEQUENCE: u8 = 1;
 const DW_LNE_SET_ADDRESS: u8 = 2;
 
@@ -19,6 +20,17 @@ pub fn debug_sections(rows: &[DebugLineRow], compilation_dir: &Path) -> Vec<Extr
     let mut files: Vec<String> = rows.iter().map(|row| row.file.clone()).collect();
     files.sort();
     files.dedup();
+    let mut directories: Vec<String> = files
+        .iter()
+        .filter_map(|file| file_directory(file))
+        .collect();
+    directories.sort();
+    directories.dedup();
+    let directory_indices: BTreeMap<String, u32> = directories
+        .iter()
+        .enumerate()
+        .map(|(index, directory)| (directory.clone(), index as u32 + 1))
+        .collect();
     let file_indices: BTreeMap<String, u32> = files
         .iter()
         .enumerate()
@@ -36,6 +48,9 @@ pub fn debug_sections(rows: &[DebugLineRow], compilation_dir: &Path) -> Vec<Extr
             sh_type: SHT_PROGBITS,
             flags: 0,
             addralign: 1,
+            link: 0,
+            info: 0,
+            entsize: 0,
             data: debug_info(producer_offset, name_offset, comp_dir_offset),
             relocs: Vec::new(),
         },
@@ -44,19 +59,35 @@ pub fn debug_sections(rows: &[DebugLineRow], compilation_dir: &Path) -> Vec<Extr
             sh_type: SHT_PROGBITS,
             flags: 0,
             addralign: 1,
+            link: 0,
+            info: 0,
+            entsize: 0,
             data: debug_abbrev(),
             relocs: Vec::new(),
         },
-        debug_line(rows, &files, &file_indices),
+        debug_line(rows, &directories, &directory_indices, &files, &file_indices),
         ExtraSection {
             name: ".debug_str".to_string(),
             sh_type: SHT_PROGBITS,
             flags: 0,
             addralign: 1,
+            link: 0,
+            info: 0,
+            entsize: 0,
             data: debug_str,
             relocs: Vec::new(),
         },
     ]
+}
+
+fn file_directory(file: &str) -> Option<String> {
+    file.rsplit_once('/').and_then(|(directory, _)| {
+        (!directory.is_empty()).then(|| directory.to_string())
+    })
+}
+
+fn file_name(file: &str) -> &str {
+    file.rsplit_once('/').map_or(file, |(_, name)| name)
 }
 
 fn debug_strings(unit_name: &str, comp_dir: &str) -> (Vec<u8>, u32, u32, u32) {
@@ -111,6 +142,8 @@ fn debug_info(producer_offset: u32, name_offset: u32, comp_dir_offset: u32) -> V
 
 fn debug_line(
     rows: &[DebugLineRow],
+    directories: &[String],
+    directory_indices: &BTreeMap<String, u32>,
     files: &[String],
     file_indices: &BTreeMap<String, u32>,
 ) -> ExtraSection {
@@ -121,11 +154,21 @@ fn debug_line(
     let header_start = data.len();
     data.extend_from_slice(&[1, 1, 1, -5i8 as u8, 14, 13]);
     data.extend_from_slice(&[0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1]);
+    for directory in directories {
+        data.extend_from_slice(directory.as_bytes());
+        data.push(0);
+    }
     data.push(0); // include directories terminator
     for file in files {
-        data.extend_from_slice(file.as_bytes());
+        data.extend_from_slice(file_name(file).as_bytes());
         data.push(0);
-        write_uleb(&mut data, 0); // directory
+        let directory = file_directory(file);
+        let directory_index = directory
+            .as_ref()
+            .and_then(|directory| directory_indices.get(directory))
+            .copied()
+            .unwrap_or(0);
+        write_uleb(&mut data, directory_index as u64);
         write_uleb(&mut data, 0); // modification time
         write_uleb(&mut data, 0); // size
     }
@@ -135,27 +178,43 @@ fn debug_line(
 
     let mut relocs = Vec::new();
     let mut active_section = None;
+    let mut has_sequence = false;
     let mut current_line = 1i64;
     let mut current_file = 1u32;
-    for row in rows.iter().filter(|row| row.is_stmt && row.section.is_some()) {
-        if active_section != row.section {
-            if active_section.is_some() {
+    let mut current_column = 0u32;
+    let mut statement_rows: Vec<&DebugLineRow> = rows.iter().filter(|row| row.is_stmt).collect();
+    statement_rows.sort_by_key(|row| {
+        (
+            row.section,
+            row.offset_or_address,
+            &row.file,
+            row.line_num,
+            row.column,
+        )
+    });
+    for row in statement_rows {
+        if !has_sequence || active_section != row.section {
+            if has_sequence {
                 data.extend_from_slice(&[0, 1, DW_LNE_END_SEQUENCE]);
             }
             active_section = row.section;
+            has_sequence = true;
             current_line = 1;
             current_file = 1;
+            current_column = 0;
         }
 
         data.extend_from_slice(&[0, 3, DW_LNE_SET_ADDRESS]);
         let reloc_offset = data.len() as u32;
-        data.extend_from_slice(&0u16.to_le_bytes());
-        relocs.push(Reloc {
-            offset: reloc_offset,
-            kind: RelocKind::Abs16,
-            target: RelocTarget::Section(row.section.expect("checked above")),
-            addend: row.offset_or_address as i64,
-        });
+        data.extend_from_slice(&(row.section.map_or(row.offset_or_address as u16, |_| 0)).to_le_bytes());
+        if let Some(section) = row.section {
+            relocs.push(Reloc {
+                offset: reloc_offset,
+                kind: RelocKind::Abs16,
+                target: RelocTarget::Section(section),
+                addend: row.offset_or_address as i64,
+            });
+        }
 
         let file = file_indices[&row.file];
         if current_file != file {
@@ -169,9 +228,14 @@ fn debug_line(
             write_sleb(&mut data, line_delta);
             current_line = row.line_num as i64;
         }
+        if current_column != row.column {
+            data.push(DW_LNS_SET_COLUMN);
+            write_uleb(&mut data, row.column as u64);
+            current_column = row.column;
+        }
         data.push(DW_LNS_COPY);
     }
-    if active_section.is_some() {
+    if has_sequence {
         data.extend_from_slice(&[0, 1, DW_LNE_END_SEQUENCE]);
     }
     write_initial_length(&mut data);
@@ -181,6 +245,9 @@ fn debug_line(
         sh_type: SHT_PROGBITS,
         flags: 0,
         addralign: 1,
+        link: 0,
+        info: 0,
+        entsize: 0,
         data,
         relocs,
     }
@@ -219,7 +286,34 @@ fn write_sleb(data: &mut Vec<u8>, mut value: i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_sleb, write_uleb};
+    use std::path::Path;
+
+    use crate::assembler::{DebugLineRow, EmissionKind};
+
+    use super::{debug_sections, write_sleb, write_uleb, ExtraSection};
+
+    fn row(section: Option<usize>, address: u32, file: &str, line: usize, column: u32) -> DebugLineRow {
+        DebugLineRow {
+            section,
+            offset_or_address: address,
+            byte_len: 1,
+            file: file.to_string(),
+            line_num: line,
+            column,
+            is_stmt: true,
+            kind: EmissionKind::Instruction,
+            macro_context: None,
+            expansion: Vec::new(),
+        }
+    }
+
+    fn section<'a>(sections: &'a [ExtraSection], name: &str) -> &'a ExtraSection {
+        sections.iter().find(|section| section.name == name).unwrap()
+    }
+
+    fn initial_length(data: &[u8]) -> usize {
+        u32::from_le_bytes(data[..4].try_into().unwrap()) as usize
+    }
 
     #[test]
     fn leb128_encoders_match_known_values() {
@@ -230,5 +324,57 @@ mod tests {
         let mut signed = Vec::new();
         write_sleb(&mut signed, -624_485);
         assert_eq!(signed, [0x9b, 0xf1, 0x59]);
+    }
+
+    #[test]
+    fn debug_sections_encode_deterministic_dwarf_v4_metadata() {
+        let rows = vec![
+            row(Some(1), 2, "src/main.asm", 9, 6),
+            row(Some(0), 1, "lib/util.asm", 4, 0),
+        ];
+        let sections = debug_sections(&rows, Path::new("C:\\project"));
+        let reversed_rows: Vec<DebugLineRow> = rows.into_iter().rev().collect();
+        let reversed = debug_sections(&reversed_rows, Path::new("C:\\project"));
+
+        assert_eq!(sections.len(), 4);
+        assert_eq!(
+            sections.iter().map(|section| section.name.as_str()).collect::<Vec<_>>(),
+            [".debug_info", ".debug_abbrev", ".debug_line", ".debug_str"],
+        );
+        for name in [".debug_info", ".debug_line"] {
+            let section = section(&sections, name);
+            assert_eq!(initial_length(&section.data), section.data.len() - 4);
+        }
+        assert_eq!(&section(&sections, ".debug_info").data[4..11], &[4, 0, 0, 0, 0, 0, 2]);
+        assert_eq!(section(&sections, ".debug_abbrev").data.last(), Some(&0));
+        assert_eq!(section(&sections, ".debug_str").data, b"v6asm\0lib/util.asm\0C:/project\0");
+
+        let line = section(&sections, ".debug_line");
+        assert!(line.data.windows(b"lib\0src\0".len()).any(|window| window == b"lib\0src\0"));
+        assert!(line.data.windows(b"util.asm\0\x01\0\0main.asm\0\x02\0\0".len()).any(|window| {
+            window == b"util.asm\0\x01\0\0main.asm\0\x02\0\0"
+        }));
+        assert_eq!(line.relocs.len(), 2);
+        let header_length = u32::from_le_bytes(line.data[6..10].try_into().unwrap()) as usize;
+        let program = &line.data[10 + header_length..];
+        assert_eq!(program.windows(3).filter(|window| *window == [0, 1, 1]).count(), 2);
+
+        for (section, reversed_section) in sections.iter().zip(reversed.iter()) {
+            assert_eq!(section.data, reversed_section.data);
+            assert_eq!(section.relocs.len(), reversed_section.relocs.len());
+        }
+    }
+
+    #[test]
+    fn direct_rom_line_rows_use_absolute_addresses_without_relocations() {
+        let sections = debug_sections(
+            &[row(None, 0x1234, "game.asm", 3, 7)],
+            Path::new("."),
+        );
+        let line = section(&sections, ".debug_line");
+
+        assert!(line.relocs.is_empty());
+        assert!(line.data.windows(5).any(|window| window == [0, 3, 2, 0x34, 0x12]));
+        assert!(line.data.windows(3).any(|window| window == [5, 7, 1]));
     }
 }

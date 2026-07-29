@@ -10,6 +10,7 @@ v6asm main.asm                 # assemble → main.rom
 v6asm main.asm -l              # + listing file
 v6asm main.asm -c z80          # Z80 mnemonic mode
 v6asm main.asm -g -f obj        # relocatable object with DWARF v4 metadata
+v6asm main.asm -g               # ROM plus sibling debug ELF companion
 v6asm -v                       # print build version
 ```
 

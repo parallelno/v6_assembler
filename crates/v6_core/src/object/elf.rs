@@ -13,6 +13,7 @@ const ELFOSABI_NONE: u8 = 0;
 
 // ---- ELF header fields ----
 const ET_REL: u16 = 1;
+const ET_EXEC: u16 = 2;
 const EM_V6C: u16 = 0x8080;
 
 // ---- Section header types ----
@@ -87,6 +88,7 @@ pub struct ObjSymbol {
     pub name: String,
     pub binding: SymBinding,
     pub kind: SymType,
+    pub size: u32,
     pub location: SymLocation,
 }
 
@@ -98,6 +100,9 @@ pub struct ExtraSection {
     pub sh_type: u32,
     pub flags: u32,
     pub addralign: u32,
+    pub link: u32,
+    pub info: u32,
+    pub entsize: u32,
     pub data: Vec<u8>,
     pub relocs: Vec<super::section::Reloc>,
 }
@@ -152,6 +157,31 @@ struct OutSection {
 /// symbols to expose in `.symtab` (section symbols are generated automatically).
 pub fn serialize(sections: &[Section], symbols: &[ObjSymbol]) -> Vec<u8> {
     serialize_with_extra(sections, symbols, &[])
+}
+
+/// Serialize a fully located executable image. The image is represented by one
+/// allocatable `.text` section beginning at `base_address`; debug sections are
+/// non-allocating and use absolute addresses in their line program.
+pub fn serialize_executable(
+    image: &[u8],
+    base_address: u16,
+    symbols: &[ObjSymbol],
+    extra_sections: &[ExtraSection],
+) -> Vec<u8> {
+    let mut text = Section::new(
+        ".text",
+        super::section::SHF_ALLOC | super::section::SHF_EXECINSTR,
+        super::section::SHT_PROGBITS,
+    );
+    text.bytes.extend_from_slice(image);
+    text.size = image.len() as u32;
+
+    let mut bytes = serialize_with_extra(&[text], symbols, extra_sections);
+    bytes[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+    let shoff = u32::from_le_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]) as usize;
+    // The first section header after null is the image `.text` section.
+    put_u32(&mut bytes, shoff + 40 + 12, base_address as u32);
+    bytes
 }
 
 /// Serialize user sections plus arbitrary non-allocating metadata sections.
@@ -230,7 +260,7 @@ pub fn serialize_with_extra(
             SymLocation::Absolute(v) => (*v, SHN_ABS),
             SymLocation::Undefined => (0, SHN_UNDEF),
         };
-        write_sym(&mut sym_bytes, name_off, value, 0, info, 0, shndx);
+        write_sym(&mut sym_bytes, name_off, value, s.size, info, 0, shndx);
         name_to_symidx.insert(s.name.clone(), next_index);
         next_index += 1;
     }
@@ -301,10 +331,10 @@ pub fn serialize_with_extra(
             flags: s.flags,
             offset: 0,
             size: s.data.len() as u32,
-            link: 0,
-            info: 0,
+            link: s.link,
+            info: s.info,
             addralign: s.addralign.max(1),
-            entsize: 0,
+            entsize: s.entsize,
             data: s.data.clone(),
             is_nobits: false,
         });

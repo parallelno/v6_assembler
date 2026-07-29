@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::assembler::{Assembler, ListingLine};
+use crate::assembler::{Assembler, DebugLineRow, EmissionKind, ListingLine};
 use crate::diagnostics::{AsmError, AsmResult};
 use crate::object::elf::{self, ObjSymbol, SymBinding, SymLocation, SymType};
-use crate::object::section::{RelocTarget, SHF_EXECINSTR};
+use crate::object::section::RelocTarget;
 
 // Maximum number of bytes to display in the listing BYTES column
 const LISTING_MAX_BYTES: usize = 8;
@@ -47,6 +47,41 @@ pub fn write_rom(rom: &[u8], path: &Path) -> AsmResult<()> {
         .map_err(|e| AsmError::new(format!("Failed to write ROM file: {}", e)))
 }
 
+/// Build an `ET_EXEC` debug companion for direct ROM output.
+pub fn generate_debug_companion(asm: &Assembler, config: &RomConfig) -> Vec<u8> {
+    let image = generate_rom(asm, config);
+    let mut symbols = Vec::new();
+    let mut names: Vec<_> = asm.symbols.all_globals()
+        .values()
+        .filter(|info| info.is_code_label && !info.original_name.starts_with('@'))
+        .collect();
+    names.sort_by(|left, right| left.original_name.cmp(&right.original_name));
+    for info in names {
+        let offset = info.value.unwrap_or(0) as u32;
+        let (kind, size) = debug_symbol_kind_and_size(
+            offset,
+            None,
+            next_debug_label_offset(asm, None, offset),
+            &asm.debug_rows,
+        );
+        symbols.push(ObjSymbol {
+            name: info.original_name.clone(),
+            binding: SymBinding::Local,
+            kind,
+            size,
+            location: SymLocation::Absolute(info.value.unwrap_or(0) as u32),
+        });
+    }
+    let debug_sections = crate::object::dwarf::debug_sections(&asm.debug_rows, asm.project_dir());
+    elf::serialize_executable(&image, rom_start_address(asm), &symbols, &debug_sections)
+}
+
+/// Write the direct-ROM debug companion ELF.
+pub fn write_debug_companion(asm: &Assembler, config: &RomConfig, path: &Path) -> AsmResult<()> {
+    std::fs::write(path, generate_debug_companion(asm, config))
+        .map_err(|e| AsmError::new(format!("Failed to write debug ELF file: {}", e)))
+}
+
 // ---- Object (ELF) output ----
 
 /// Configuration for object-file emission.
@@ -67,28 +102,31 @@ pub fn generate_object(asm: &Assembler, config: &ObjConfig) -> AsmResult<Vec<u8>
         if seen.iter().any(|s| s.eq_ignore_ascii_case(name)) {
             return;
         }
-        let (kind, location) = match asm.symbols.get_global_info(name) {
+        let (kind, size, location) = match asm.symbols.get_global_info(name) {
             Some(info) => {
                 if let Some(sec) = info.section {
-                    let is_exec = sections
-                        .get(sec)
-                        .map(|s| s.flags & SHF_EXECINSTR != 0)
-                        .unwrap_or(false);
-                    // Only direct label definitions (`foo:`) in executable
-                    // sections get STT_FUNC.  Constant aliases (`foo = bar+1`)
-                    // always get NOTYPE, even in .text.
-                    let kind = if is_exec && info.is_code_label { SymType::Func } else { SymType::NoType };
-                    (kind, SymLocation::Section { index: sec, offset: info.value.unwrap_or(0) as u32 })
+                    let offset = info.value.unwrap_or(0) as u32;
+                    let (kind, size) = if info.is_code_label {
+                        debug_symbol_kind_and_size(
+                            offset,
+                            Some(sec),
+                            next_debug_label_offset(asm, Some(sec), offset),
+                            &asm.debug_rows,
+                        )
+                    } else {
+                        (SymType::NoType, 0)
+                    };
+                    (kind, size, SymLocation::Section { index: sec, offset })
                 } else if let Some(v) = info.value {
-                    (SymType::NoType, SymLocation::Absolute(v as u32))
+                    (SymType::NoType, 0, SymLocation::Absolute(v as u32))
                 } else {
-                    (SymType::NoType, SymLocation::Undefined)
+                    (SymType::NoType, 0, SymLocation::Undefined)
                 }
             }
-            None => (SymType::NoType, SymLocation::Undefined),
+            None => (SymType::NoType, 0, SymLocation::Undefined),
         };
         seen.push(name.to_string());
-        symbols.push(ObjSymbol { name: name.to_string(), binding, kind, location });
+        symbols.push(ObjSymbol { name: name.to_string(), binding, kind, size, location });
     };
 
     // Exported (.globl) and weak symbols first.
@@ -140,6 +178,55 @@ pub fn generate_object(asm: &Assembler, config: &ObjConfig) -> AsmResult<Vec<u8>
         .then(|| crate::object::dwarf::debug_sections(&asm.debug_rows, asm.project_dir()))
         .unwrap_or_default();
     Ok(elf::serialize_with_extra(sections, &symbols, &debug_sections))
+}
+
+fn debug_symbol_kind_and_size(
+    offset_or_address: u32,
+    section: Option<usize>,
+    end_bound: Option<u32>,
+    rows: &[DebugLineRow],
+) -> (SymType, u32) {
+    let matching_rows: Vec<&DebugLineRow> = rows
+        .iter()
+        .filter(|row| {
+            row.section == section
+                && row.offset_or_address >= offset_or_address
+                && end_bound.is_none_or(|end| row.offset_or_address < end)
+        })
+        .collect();
+    let Some(first) = matching_rows
+        .iter()
+        .find(|row| row.offset_or_address == offset_or_address)
+    else {
+        return (SymType::NoType, 0);
+    };
+
+    match first.kind {
+        EmissionKind::Data | EmissionKind::Storage => (SymType::Object, first.byte_len),
+        EmissionKind::Instruction => {
+            let end = matching_rows
+                .iter()
+                .take_while(|row| row.kind == EmissionKind::Instruction)
+                .map(|row| row.offset_or_address + row.byte_len)
+                .max()
+                .unwrap_or(offset_or_address);
+            (SymType::Func, end - offset_or_address)
+        }
+        EmissionKind::Padding => (SymType::NoType, 0),
+    }
+}
+
+fn next_debug_label_offset(asm: &Assembler, section: Option<usize>, offset_or_address: u32) -> Option<u32> {
+    asm.symbols
+        .all_globals()
+        .values()
+        .filter(|info| {
+            info.is_code_label
+                && info.section == section
+                && info.value.is_some_and(|value| value as u32 > offset_or_address)
+        })
+        .filter_map(|info| info.value.map(|value| value as u32))
+        .min()
 }
 
 /// Write a relocatable ELF object to file.

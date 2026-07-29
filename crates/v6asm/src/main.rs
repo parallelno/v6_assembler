@@ -5,7 +5,7 @@ use std::time::Instant;
 use clap::{CommandFactory, Parser};
 use v6_core::assembler::{Assembler, OutputFormat};
 use v6_core::diagnostics::{AsmError, AsmResult};
-use v6_core::output::{generate_listing, generate_rom, rom_start_address, write_listing, write_object, write_rom, ObjConfig, RomConfig};
+use v6_core::output::{generate_listing, generate_rom, rom_start_address, write_debug_companion, write_listing, write_object, write_rom, ObjConfig, RomConfig};
 use v6_core::preprocessor;
 use v6_core::project::CpuMode;
 use v6_core::symbols::SymbolTable;
@@ -63,9 +63,13 @@ struct Cli {
     #[arg(short = 'l', long = "lst")]
     lst: bool,
 
-    /// Emit DWARF v4 debug metadata (object output only)
+    /// Emit DWARF v4 metadata; ROM output also writes a companion ELF
     #[arg(short = 'g', long = "debug")]
     debug: bool,
+
+    /// Debug companion ELF path for direct ROM output (implies --debug)
+    #[arg(long = "debug-elf")]
+    debug_elf: Option<PathBuf>,
 
     /// Additional include search directories
     #[arg(short = 'I', long = "include-dir")]
@@ -191,6 +195,8 @@ mod tests {
             "16",
             "-l",
             "-g",
+            "--debug-elf",
+            "out.elf",
             "-o",
             "out.rom",
             "-V",
@@ -201,6 +207,7 @@ mod tests {
         assert_eq!(cli.rom_align, 16);
         assert!(cli.lst);
         assert!(cli.debug);
+        assert_eq!(cli.debug_elf.as_deref(), Some(std::path::Path::new("out.elf")));
         assert!(cli.verbose);
     }
 
@@ -222,6 +229,14 @@ mod tests {
         assert!(help.starts_with(ABOUT));
         assert!(help.contains("-i, --init"));
         assert!(help.contains("-v, --version"));
+    }
+
+    #[test]
+    fn help_text_describes_both_debug_output_modes() {
+        let help = render_help_text();
+        assert!(help.contains("-g, --debug"));
+        assert!(help.contains("ROM output also writes a companion ELF"));
+        assert!(help.contains("--debug-elf <DEBUG_ELF>"));
     }
 
     #[test]
@@ -342,8 +357,8 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
         }
     };
 
-    if cli.debug && output_format != OutputFormat::Obj {
-        return Err(AsmError::new("--debug currently requires --format obj"));
+    if cli.debug_elf.is_some() && output_format == OutputFormat::Obj {
+        return Err(AsmError::new("--debug-elf is only supported with ROM output"));
     }
 
     let mut asm = Assembler::new(cpu_mode, source_dir.clone());
@@ -406,6 +421,14 @@ fn cmd_assemble(source_path: &Path, cli: &Cli) -> Result<(), AsmError> {
     }
 
     write_rom(&rom, &rom_path)?;
+
+    if cli.debug || cli.debug_elf.is_some() {
+        let debug_elf_path = cli.debug_elf.clone().unwrap_or_else(|| rom_path.with_extension("elf"));
+        write_debug_companion(&asm, &rom_config, &debug_elf_path)?;
+        if cli.verbose {
+            eprintln!("Debug ELF written to {}", debug_elf_path.display());
+        }
+    }
 
     let start = rom_start_address(&asm);
     eprintln!(
