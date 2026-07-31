@@ -119,6 +119,10 @@ pub struct EncodedInstruction {
     pub has_imm8: bool,
     /// If true, bytes at index 1-2 are a 16-bit immediate/address to be filled from expression
     pub has_imm16: bool,
+    /// Number of non-expression operands (register / register-pair) that appear before the
+    /// immediate in the operand list.  Used by the assembler to validate the full operand
+    /// count and to detect stray register operands on immediate-only instructions.
+    pub prefix_operands: usize,
 }
 
 /// Encode an instruction given the mnemonic, operands, and CPU mode

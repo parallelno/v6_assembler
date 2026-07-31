@@ -168,6 +168,7 @@ fn encode_z80_alu_reg(operands: &[ParsedOperand], reg_base: u8, imm_opcode: u8) 
                 size: 2,
                 has_imm8: true,
                 has_imm16: false,
+                prefix_operands: 0,
             })
         }
         _ => {
@@ -177,6 +178,7 @@ fn encode_z80_alu_reg(operands: &[ParsedOperand], reg_base: u8, imm_opcode: u8) 
                 size: 1,
                 has_imm8: false,
                 has_imm16: false,
+                prefix_operands: 0,
             })
         }
     }
@@ -231,6 +233,7 @@ fn encode_z80_jp(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
             size: 3,
             has_imm8: false,
             has_imm16: true,
+            prefix_operands: 1,
         });
     }
     // JP nn — unconditional
@@ -257,6 +260,7 @@ fn encode_z80_call(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> 
             size: 3,
             has_imm8: false,
             has_imm16: true,
+            prefix_operands: 1,
         });
     }
     i8080::encode("CALL", &[])
@@ -282,6 +286,7 @@ fn encode_z80_ret(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
             size: 1,
             has_imm8: false,
             has_imm16: false,
+            prefix_operands: 0,
         });
     }
     i8080::encode("RET", &[])

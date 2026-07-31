@@ -1575,20 +1575,30 @@ impl Assembler {
     fn emit_instruction(&mut self, mnemonic: &str, operands: &[ParsedOperand], expressions: &[Expr]) -> AsmResult<()> {
         let mut encoded = encode_instruction(mnemonic, operands, self.cpu_mode)?;
 
-        // If the encoding expects an immediate but no expression was produced
-        // (e.g. `cpi a` parsed `a` as a register instead of an expression),
-        // reject early rather than silently emitting a zero byte.
-        if encoded.has_imm8 && expressions.is_empty() {
-            return Err(AsmError::new(format!(
-                "'{}' requires an 8-bit immediate expression as its operand",
-                mnemonic
-            )));
-        }
-        if encoded.has_imm16 && expressions.is_empty() {
-            return Err(AsmError::new(format!(
-                "'{}' requires a 16-bit immediate expression as its operand",
-                mnemonic
-            )));
+        // Validate that any instruction requiring an immediate has exactly the right
+        // operands: `prefix_operands` register/regpair operands followed by exactly
+        // one expression-typed operand (Imm8, Imm16, or Mem16).
+        // This catches both missing operands (`cpi`) and stray register operands
+        // that produce no expression (`cpi a`, `cpi a, 10`).
+        // Validate operand count and types for i8080 immediate instructions.
+        // Skipped in Z80 mode because the Z80 encoder remaps multi-operand Z80
+        // forms (e.g. `LD HL, (nn)` → LHLD) before arriving here, making the
+        // parser operand count inconsistent with prefix_operands.
+        if self.cpu_mode == CpuMode::I8080 && (encoded.has_imm8 || encoded.has_imm16) {
+            let expected_total = encoded.prefix_operands + 1;
+            if operands.len() != expected_total {
+                return Err(AsmError::new(format!(
+                    "'{}': expected {} operand(s), found {}",
+                    mnemonic, expected_total, operands.len()
+                )));
+            }
+            let imm_op = &operands[encoded.prefix_operands];
+            if !matches!(imm_op, ParsedOperand::Imm8 | ParsedOperand::Imm16 | ParsedOperand::Mem16) {
+                return Err(AsmError::new(format!(
+                    "'{}': operand {} must be an immediate expression, not a register or register pair",
+                    mnemonic, encoded.prefix_operands + 1
+                )));
+            }
         }
 
         if self.output_format == OutputFormat::Obj {

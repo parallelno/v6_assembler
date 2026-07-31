@@ -9,4 +9,4 @@ cpi a
 '''
 
 [expect]
-error_contains = "requires an 8-bit immediate"
+error_contains = "operand 1 must be an immediate expression"

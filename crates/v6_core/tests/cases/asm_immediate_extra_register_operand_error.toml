@@ -1,0 +1,11 @@
+# `cpi a, 10` should fail: `a` is a stray register operand that makes the
+# total operand count 2 instead of the expected 1 for CPI.
+
+[files]
+"main.asm" = '''
+.org 0
+cpi a, 10
+'''
+
+[expect]
+error_contains = "expected 1 operand(s), found 2"

@@ -110,6 +110,7 @@ fn ok_implied(opcode: u8) -> AsmResult<EncodedInstruction> {
         size: 1,
         has_imm8: false,
         has_imm16: false,
+        prefix_operands: 0,
     })
 }
 
@@ -119,6 +120,7 @@ fn ok_imm8(opcode: u8) -> AsmResult<EncodedInstruction> {
         size: 2,
         has_imm8: true,
         has_imm16: false,
+        prefix_operands: 0,
     })
 }
 
@@ -128,6 +130,7 @@ fn ok_imm16(opcode: u8) -> AsmResult<EncodedInstruction> {
         size: 3,
         has_imm8: false,
         has_imm16: true,
+        prefix_operands: 0,
     })
 }
 
@@ -163,6 +166,7 @@ fn encode_mvi(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
         size: 2,
         has_imm8: true,
         has_imm16: false,
+        prefix_operands: 1,
     })
 }
 
@@ -180,6 +184,7 @@ fn encode_lxi(operands: &[ParsedOperand]) -> AsmResult<EncodedInstruction> {
         size: 3,
         has_imm8: false,
         has_imm16: true,
+        prefix_operands: 1,
     })
 }
 
@@ -270,4 +275,3 @@ pub fn instruction_size(mnemonic: &str, operands: &[ParsedOperand]) -> AsmResult
     let enc = encode(mnemonic, operands)?;
     Ok(enc.size)
 }
-
