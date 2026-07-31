@@ -1575,6 +1575,22 @@ impl Assembler {
     fn emit_instruction(&mut self, mnemonic: &str, operands: &[ParsedOperand], expressions: &[Expr]) -> AsmResult<()> {
         let mut encoded = encode_instruction(mnemonic, operands, self.cpu_mode)?;
 
+        // If the encoding expects an immediate but no expression was produced
+        // (e.g. `cpi a` parsed `a` as a register instead of an expression),
+        // reject early rather than silently emitting a zero byte.
+        if encoded.has_imm8 && expressions.is_empty() {
+            return Err(AsmError::new(format!(
+                "'{}' requires an 8-bit immediate expression as its operand",
+                mnemonic
+            )));
+        }
+        if encoded.has_imm16 && expressions.is_empty() {
+            return Err(AsmError::new(format!(
+                "'{}' requires a 16-bit immediate expression as its operand",
+                mnemonic
+            )));
+        }
+
         if self.output_format == OutputFormat::Obj {
             let active = self.obj.active;
             let base = self.obj.sections[active].size; // offset of the opcode

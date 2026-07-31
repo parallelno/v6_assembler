@@ -1,0 +1,12 @@
+# Immediate-mode instructions must reject bare register operands.
+# `cpi a` looks syntactically plausible but `a` is parsed as Register::A,
+# leaving no expression to fill the immediate byte — should be an error.
+
+[files]
+"main.asm" = '''
+.org 0
+cpi a
+'''
+
+[expect]
+error_contains = "requires an 8-bit immediate"
