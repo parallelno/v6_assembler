@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::assembler::{Assembler, DebugLineRow, EmissionKind, ListingLine};
 use crate::diagnostics::{AsmError, AsmResult};
+use crate::object::dwarf::DebugConstant;
 use crate::object::elf::{self, ObjSymbol, SymBinding, SymLocation, SymType};
 use crate::object::section::RelocTarget;
 
@@ -53,17 +54,24 @@ pub fn generate_debug_companion(asm: &Assembler, config: &RomConfig) -> Vec<u8> 
     let mut symbols = Vec::new();
     let mut names: Vec<_> = asm.symbols.all_globals()
         .values()
-        .filter(|info| info.is_code_label && !info.original_name.starts_with('@'))
+        .filter(|info| {
+            (info.is_code_label || is_debug_constant(info))
+                && !info.original_name.starts_with('@')
+        })
         .collect();
     names.sort_by(|left, right| left.original_name.cmp(&right.original_name));
     for info in names {
         let offset = info.value.unwrap_or(0) as u32;
-        let (kind, size) = debug_symbol_kind_and_size(
-            offset,
-            None,
-            next_debug_label_offset(asm, None, offset),
-            &asm.debug_rows,
-        );
+        let (kind, size) = if info.is_code_label {
+            debug_symbol_kind_and_size(
+                offset,
+                None,
+                next_debug_label_offset(asm, None, offset),
+                &asm.debug_rows,
+            )
+        } else {
+            (SymType::NoType, 0)
+        };
         symbols.push(ObjSymbol {
             name: info.original_name.clone(),
             binding: SymBinding::Local,
@@ -72,7 +80,12 @@ pub fn generate_debug_companion(asm: &Assembler, config: &RomConfig) -> Vec<u8> 
             location: SymLocation::Absolute(info.value.unwrap_or(0) as u32),
         });
     }
-    let debug_sections = crate::object::dwarf::debug_sections(&asm.debug_rows, asm.project_dir());
+    let constants = debug_constants(asm);
+    let debug_sections = crate::object::dwarf::debug_sections(
+        &asm.debug_rows,
+        &constants,
+        asm.project_dir(),
+    );
     elf::serialize_executable(&image, rom_start_address(asm), &symbols, &debug_sections)
 }
 
@@ -143,7 +156,10 @@ pub fn generate_object(asm: &Assembler, config: &ObjConfig) -> AsmResult<Vec<u8>
     if config.debug {
         let mut local_names: Vec<String> = asm.symbols.all_globals()
             .values()
-            .filter(|info| info.is_code_label && !info.original_name.starts_with('@'))
+            .filter(|info| {
+                (info.is_code_label || is_debug_constant(info))
+                    && !info.original_name.starts_with('@')
+            })
             .map(|info| info.original_name.clone())
             .collect();
         local_names.sort();
@@ -174,10 +190,30 @@ pub fn generate_object(asm: &Assembler, config: &ObjConfig) -> AsmResult<Vec<u8>
         }
     }
 
+    let constants = debug_constants(asm);
     let debug_sections = config.debug
-        .then(|| crate::object::dwarf::debug_sections(&asm.debug_rows, asm.project_dir()))
+        .then(|| crate::object::dwarf::debug_sections(&asm.debug_rows, &constants, asm.project_dir()))
         .unwrap_or_default();
     Ok(elf::serialize_with_extra(sections, &symbols, &debug_sections))
+}
+
+fn is_debug_constant(info: &crate::symbols::SymbolInfo) -> bool {
+    !info.is_code_label && !info.is_mutable && info.section.is_none() && info.value.is_some()
+}
+
+fn debug_constants(asm: &Assembler) -> Vec<DebugConstant> {
+    let mut constants: Vec<_> = asm.symbols.all_globals()
+        .values()
+        .filter(|info| is_debug_constant(info) && !info.original_name.starts_with('@'))
+        .map(|info| DebugConstant {
+            name: info.original_name.clone(),
+            file: info.file.clone(),
+            line: info.line,
+            value: info.value.unwrap(),
+        })
+        .collect();
+    constants.sort_by(|left, right| left.name.cmp(&right.name));
+    constants
 }
 
 fn debug_symbol_kind_and_size(

@@ -177,6 +177,48 @@ fn debug_symbols_have_function_and_data_extents() {
 }
 
 #[test]
+fn debug_elf_exports_immutable_absolute_constants() {
+    let object = generate_object(
+        &assemble_obj("ARRAY_ADDR = 0x4000\nentry:\nnop\n").unwrap(),
+        &ObjConfig { debug: true },
+    ).unwrap();
+    let companion = generate_debug_companion(
+        &assemble_rom("ARRAY_ADDR = 0x4000\nentry:\nnop\n").unwrap(),
+        &RomConfig::default(),
+    );
+
+    for bytes in [&object, &companion] {
+        let e_shoff = read_u32(bytes, 32) as usize;
+        let e_shentsize = read_u16(bytes, 46) as usize;
+        let e_shnum = read_u16(bytes, 48) as usize;
+        let e_shstrndx = read_u16(bytes, 50) as usize;
+        let sh = |index: usize| e_shoff + index * e_shentsize;
+        let shstr_off = read_u32(bytes, sh(e_shstrndx) + 16) as usize;
+        let section_name = |index: usize| {
+            let start = shstr_off + read_u32(bytes, sh(index)) as usize;
+            let end = start + bytes[start..].iter().position(|&byte| byte == 0).unwrap();
+            String::from_utf8_lossy(&bytes[start..end]).into_owned()
+        };
+        let section_names: Vec<String> = (0..e_shnum).map(section_name).collect();
+        let symtab_index = section_names.iter().position(|name| name == ".symtab").unwrap();
+        let strtab_index = section_names.iter().position(|name| name == ".strtab").unwrap();
+        let symtab_off = read_u32(bytes, sh(symtab_index) + 16) as usize;
+        let symtab_size = read_u32(bytes, sh(symtab_index) + 20) as usize;
+        let strtab_off = read_u32(bytes, sh(strtab_index) + 16) as usize;
+
+        let constant = (0..symtab_size / 16).find_map(|index| {
+            let base = symtab_off + index * 16;
+            let name_start = strtab_off + read_u32(bytes, base) as usize;
+            let name_end = name_start + bytes[name_start..].iter().position(|&byte| byte == 0).unwrap();
+            (String::from_utf8_lossy(&bytes[name_start..name_end]) == "ARRAY_ADDR")
+                .then(|| (read_u32(bytes, base + 4), bytes[base + 12], read_u16(bytes, base + 14)))
+        }).unwrap();
+
+        assert_eq!(constant, (0x4000, 0, 0xfff1));
+    }
+}
+
+#[test]
 fn extra_sections_preserve_explicit_elf_metadata() {
     let asm = assemble_obj("nop\n").unwrap();
     let bytes = serialize_with_extra(

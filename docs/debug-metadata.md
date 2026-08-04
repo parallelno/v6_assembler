@@ -22,7 +22,8 @@ v6asm -g game.asm -o game.rom
 
 Use `--debug-elf <path>` to choose the companion location. The companion has
 an allocatable `.text` section at the ROM's first emitted address, a local
-symbol table for module-level code labels, and absolute DWARF line addresses.
+symbol table for module-level code labels and immutable absolute constants,
+and absolute DWARF line addresses.
 Its `.text` contents are the same contiguous byte range as the ROM.
 
 Keep `game.elf` for the debugger and use `game.rom` where a raw ROM image is
@@ -83,13 +84,19 @@ listing behavior.
 
 ## Symbols
 
-For a debug object, module-level labels are included in `.symtab` as local
-symbols unless `.globl`, `.global`, or `.weak` gives them an external binding.
+For a debug object, module-level labels and immutable absolute constants are
+included in `.symtab` as local symbols unless `.globl`, `.global`, or `.weak`
+gives them an external binding.
 Labels that begin executable instruction ranges use `STT_FUNC`; labels that
 begin emitted data or storage ranges use `STT_OBJECT`. Both receive a non-zero
 size when the next module label or source range establishes an extent. Existing
 section symbols continue to be used for ordinary intra-object relocations.
-Direct-ROM companions include the same module-level labels as local symbols.
+Direct-ROM companions include the same module-level labels and constants as
+local symbols.
+Immutable absolute constants are included as `STT_NOTYPE` `SHN_ABS` symbols
+with a `DW_TAG_variable` declaration that records their source file, line, and
+numeric value. The assembler cannot distinguish address-like constants from
+generic numeric constants, so both use this representation.
 
 Scoped `@` labels and macro-generated names are intentionally omitted from the
 debugger-facing named-symbol set because their source spelling is not unique.
